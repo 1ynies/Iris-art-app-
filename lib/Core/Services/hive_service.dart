@@ -48,7 +48,70 @@ class HiveService {
     return activeSessions;
   }
   
-  // 4. Clear All (Optional, for debugging)
+  // 4. Get Session by ID
+  static ClientSession? getSessionById(String sessionId) {
+    final box = Hive.box<ClientSession>(_boxName);
+    return box.get(sessionId);
+  }
+
+  // 5. Update Session with Raw Images (imported photos)
+  static Future<void> updateSessionImages(String sessionId, List<String> imagePaths) async {
+    final box = Hive.box<ClientSession>(_boxName);
+    final session = box.get(sessionId);
+    
+    if (session != null) {
+      // Create updated session with new image paths
+      final updatedSession = session.copyWith(
+        importedPhotos: imagePaths,
+      );
+      await box.put(sessionId, updatedSession);
+    }
+  }
+
+  // 6. Update Session with Generated Art (edited/final images)
+  static Future<void> updateSessionGeneratedArt(String sessionId, List<String> artPaths) async {
+    final box = Hive.box<ClientSession>(_boxName);
+    final session = box.get(sessionId);
+    
+    if (session != null) {
+      // Create updated session with new art paths
+      final updatedSession = session.copyWith(
+        generatedArt: artPaths,
+      );
+      await box.put(sessionId, updatedSession);
+    }
+  }
+
+  // 7. Add Single Image to Session (for incremental updates)
+  static Future<void> addImageToSession(String sessionId, String imagePath) async {
+    final box = Hive.box<ClientSession>(_boxName);
+    final session = box.get(sessionId);
+    
+    if (session != null) {
+      // Avoid duplicates
+      final updatedPhotos = List<String>.from(session.importedPhotos);
+      if (!updatedPhotos.contains(imagePath)) {
+        updatedPhotos.add(imagePath);
+        final updatedSession = session.copyWith(importedPhotos: updatedPhotos);
+        await box.put(sessionId, updatedSession);
+      }
+    }
+  }
+
+  // 8. Remove Single Image from Session
+  static Future<void> removeImageFromSession(String sessionId, String imagePath) async {
+    final box = Hive.box<ClientSession>(_boxName);
+    final session = box.get(sessionId);
+    
+    if (session != null) {
+      final updatedPhotos = List<String>.from(session.importedPhotos)
+        ..remove(imagePath);
+      final updatedSession = session.copyWith(importedPhotos: updatedPhotos);
+      await box.put(sessionId, updatedSession);
+    }
+  }
+  
+  // 9. Clear All (Optional, for debugging)
   static Future<void> clearAll() async {
     final box = Hive.box<ClientSession>(_boxName);
     await box.clear();

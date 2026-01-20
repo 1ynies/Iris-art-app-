@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_gap/flutter_gap.dart';
+import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:iris_designer/Core/Services/hive_service.dart';
 import 'package:iris_designer/Features/ONBOARDING/Domain/entities/client_session.dart';
@@ -16,7 +17,7 @@ class SessionHistoryDialog extends StatelessWidget {
       backgroundColor: const Color(0xFF1E293B), // Matches your card/dialog theme
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
       child: Container(
-        width: 950, // Nice wide layout for the table
+        width: 1150, // ✅ UPDATED: Wider layout for better visibility
         height: 600,
         padding: const EdgeInsets.all(32),
         child: Column(
@@ -130,6 +131,7 @@ class SessionHistoryDialog extends StatelessWidget {
                               DataColumn(label: Center(child: Text("UPLOADS"))),
                               DataColumn(label: Center(child: Text("ARTWORKS"))),
                               DataColumn(label: Text("EXPIRES IN")),
+                              DataColumn(label: Center(child: Text("ACTIONS"))), // ✅ NEW: Actions column
                             ],
                             rows: sessions.map((session) {
                               final expiryTime = session.createdAt
@@ -236,6 +238,34 @@ class SessionHistoryDialog extends StatelessWidget {
                                               fontWeight: FontWeight.w500),
                                         ),
                                       ],
+                                    ),
+                                  ),
+
+                                  // ✅ NEW: Action Button - Jump back into session
+                                  DataCell(
+                                    Center(
+                                      child: Tooltip(
+                                        message: "Resume Session",
+                                        child: IconButton(
+                                          icon: const Icon(
+                                            Icons.play_circle_outline,
+                                            color: Colors.blueAccent,
+                                            size: 24,
+                                          ),
+                                          onPressed: () {
+                                            // Close the dialog
+                                            Navigator.pop(context);
+                                            
+                                            // Navigate to image-prep with the session data
+                                            // This will load all saved images (importedPhotos and generatedArt)
+                                            context.goNamed(
+                                              'image-prep',
+                                              extra: session,
+                                            );
+                                          },
+                                          hoverColor: Colors.blueAccent.withOpacity(0.1),
+                                        ),
+                                      ),
                                     ),
                                   ),
                                 ],

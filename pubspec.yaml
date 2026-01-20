@@ -79,6 +79,7 @@ dependencies:
 
 
   url_launcher: ^6.2.0
+  desktop_drop: ^0.7.0
   # webview_flutter: ^4.13.1
   # webview_windows: ^0.4.0
   # flutter_linux_webview: ^0.1.3

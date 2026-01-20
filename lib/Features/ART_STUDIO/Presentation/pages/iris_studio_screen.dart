@@ -11,6 +11,7 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
 import 'package:iris_designer/Core/Config/Theme.dart';
 import 'package:iris_designer/Core/Shared/Widgets/global_custom_navbar.dart';
+import 'package:iris_designer/Core/Shared/Widgets/global_submit_button_widget.dart';
 import 'package:iris_designer/Core/Utils/toast_service.dart';
 import 'package:iris_designer/Features/ART_STUDIO/Presentation/views/case1_view.dart';
 import 'package:iris_designer/Features/ART_STUDIO/Presentation/views/case2_view.dart';
@@ -25,8 +26,9 @@ import 'package:url_launcher/url_launcher_string.dart';
 class ArtStudioScreen extends StatefulWidget {
   final ClientSession session;
   final List<String> irisImages;
+  final List<String>? fullGalleryImages;
 
-  const ArtStudioScreen({super.key, required this.irisImages, required this.session});
+  const ArtStudioScreen({super.key, required this.irisImages, required this.session, this.fullGalleryImages});
 
   @override
   State<ArtStudioScreen> createState() => _ArtStudioScreenState();
@@ -57,7 +59,8 @@ class _ArtStudioScreenState extends State<ArtStudioScreen> {
           if (_currentTabIndex == 1) {
             _backToEditor();
           } else {
-            context.goNamed('image-prep-2', extra: {'session': widget.session, 'imageUrls': widget.irisImages});
+            final List<String> imagesToReturn = widget.fullGalleryImages ?? widget.irisImages;
+            context.goNamed('image-prep-2', extra: {'session': widget.session, 'imageUrls': imagesToReturn});
           }
         },
         subtitle: widget.session.clientName,
@@ -88,57 +91,64 @@ class _ArtStudioScreenState extends State<ArtStudioScreen> {
     );
   }
 
+  // ✅ UPDATED: Tab Header with Underlines and Transparent Background
   Widget _buildTabHeader() {
     return Container(
-      height: 60,
+      height: 50,
       width: double.infinity,
-      color: const Color(0xFF161B22),
+      color: const Color(0xFF0F1116), // Match Screen Background
       child: Center(
-        child: Container(
-          width: 300,
-          height: 40,
-          decoration: BoxDecoration(
-            color: const Color(0xFF0F1116),
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: Colors.white10),
-          ),
-          child: Row(
-            children: [
-              _buildTabBtn("Studio", 0),
-              _buildTabBtn("Preview & Print", 1),
-            ],
-          ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            _buildTabBtn("Studio", 0),
+            const Gap(40), // Spacing between tabs
+            _buildTabBtn("Preview & Print", 1),
+          ],
         ),
       ),
     );
   }
 
+  // ✅ UPDATED: Tab Button with Blue Text, Underline, and Lock Icon
   Widget _buildTabBtn(String label, int index) {
     final bool isActive = _currentTabIndex == index;
-    return Expanded(
-      child: GestureDetector(
-        onTap: () {
-          if (index == 1 && _generationConfig == null) {
-            ToastService.showError(context, title: "Action Required", message: "Please configure your art first.");
-            return;
-          }
-          setState(() => _currentTabIndex = index);
-        },
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 200),
-          decoration: BoxDecoration(
-            color: isActive ? AppColors.primaryBlue : Colors.transparent,
-            borderRadius: BorderRadius.circular(20),
-          ),
-          alignment: Alignment.center,
-          child: Text(
-            label,
-            style: GoogleFonts.poppins(
-              color: isActive ? Colors.white : Colors.grey,
-              fontWeight: isActive ? FontWeight.w600 : FontWeight.w400,
-              fontSize: 12,
+    // Lock the second tab (index 1) if config is null
+    final bool isLocked = index == 1 && _generationConfig == null;
+
+    return GestureDetector(
+      onTap: () {
+        if (isLocked) {
+          ToastService.showError(context, title: "Locked", message: "Please configure and generate your art first.");
+          return;
+        }
+        setState(() => _currentTabIndex = index);
+      },
+      child: Container(
+        padding: const EdgeInsets.only(bottom: 8), // Space for the underline
+        decoration: BoxDecoration(
+          border: Border(
+            bottom: BorderSide(
+              color: isActive ? AppColors.primaryBlue : Colors.transparent,
+              width: 2, // Line thickness
             ),
           ),
+        ),
+        child: Row(
+          children: [
+            Text(
+              label,
+              style: GoogleFonts.poppins(
+                color: isActive ? AppColors.primaryBlue : Colors.grey,
+                fontWeight: isActive ? FontWeight.w600 : FontWeight.w500,
+                fontSize: 16,
+              ),
+            ),
+            if (isLocked) ...[
+              const Gap(8),
+              const Icon(Icons.lock_outline, size: 14, color: Colors.grey),
+            ],
+          ],
         ),
       ),
     );
@@ -146,7 +156,7 @@ class _ArtStudioScreenState extends State<ArtStudioScreen> {
 }
 
 // ============================================================================
-// TAB 1: STUDIO EDITOR (Logic Unchanged)
+// TAB 1: STUDIO EDITOR
 // ============================================================================
 class StudioEditorTab extends StatefulWidget {
   final ClientSession session;
@@ -162,23 +172,35 @@ class StudioEditorTab extends StatefulWidget {
 class _StudioEditorTabState extends State<StudioEditorTab> {
   String selectedEffect = 'Pure';
   String? selectedSize;
-  String? selectedAlignment;
-
+  
   final List<Map<String, dynamic>> soloEffects = [
     {'name': 'Pure', 'color': Colors.blue}, {'name': 'Halo', 'color': Colors.amber},
     {'name': 'Dust', 'color': Colors.grey}, {'name': 'Sun', 'color': Colors.orange},
     {'name': 'Explosion', 'color': Colors.red},
   ];
-  final List<String> sizesSquare = ['20x20', '30x30', '40x40'];
-  final List<String> sizesRow = ['40x20', '60x20', '80x20', '100x20', '90x30', '120x30', '80x40', '120x40'];
-  final List<String> sizesCol = ['20x40', '20x60', '20x80', '20x100', '30x90', '30x120', '40x80', '40x120'];
-  final List<String> sizesRect = ['A4 (20x30)'];
 
-  @override
-  void initState() {
-    super.initState();
-    if (widget.irisImages.length == 1) selectedAlignment = 'Square';
-    if (widget.irisImages.length == 2) selectedAlignment = 'Row';
+  final List<Map<String, dynamic>> duoEffects = [
+    {'name': 'Fusion', 'color': Colors.purpleAccent}, 
+    {'name': 'Collision', 'color': Colors.redAccent},
+    {'name': 'Balance', 'color': Colors.tealAccent},
+    {'name': 'Binary', 'color': Colors.cyanAccent},
+    {'name': 'Eclipse', 'color': Colors.indigoAccent},
+  ];
+
+  // ✅ SIZES DATA (Kept exactly as requested)
+  final List<String> sizesCol = ['20x40', '20x60', '20x80', '20x100', '30x90', '30x120', '40x80', '40x120'];
+  final List<String> sizesRow = ['40x20', '60x20', '80x20', '100x20', '90x30', '120x30', '80x40', '120x40'];
+  final List<String> sizesSquare = ['20x20', '30x30', '40x40', '50x50', '60x60', '70x70', '80x80', '90x90', '100x100'];
+  final List<String> sizesRound = ['40', '50', '60', '80', '100'];
+  final List<String> sizesRect = ['40x60', '50x80', '60x90', '80x120', '100x150'];
+
+  String _determineAlignment(String size) {
+    if (sizesSquare.contains(size)) return 'Square';
+    if (sizesRow.contains(size)) return 'Row';
+    if (sizesCol.contains(size)) return 'Column';
+    if (sizesRound.contains(size)) return 'Round';
+    if (sizesRect.contains(size)) return 'Rectangle';
+    return 'Square'; 
   }
 
   void _handleShowPressed() async {
@@ -192,8 +214,9 @@ class _StudioEditorTabState extends State<StudioEditorTab> {
     }
 
     String safeEffect = selectedEffect.replaceAll(" ", "");
-    String safeSize = selectedSize!.split(" ").first;
-    String filename = "${safeEffect}_${safeSize}_${selectedAlignment ?? 'Square'}".toLowerCase();
+    String safeSize = selectedSize!;
+    String alignment = _determineAlignment(safeSize);
+    String filename = "${safeEffect}_${safeSize}_$alignment".toLowerCase();
 
     widget.onGenerateRequest({
       "images": base64Images,
@@ -202,61 +225,150 @@ class _StudioEditorTabState extends State<StudioEditorTab> {
     });
   }
 
+  List<DropdownMenuItem<String>> _buildGroupedItems() {
+    List<DropdownMenuItem<String>> items = [];
+    
+    void addSection(String title, List<String> data) {
+      items.add(
+        DropdownMenuItem<String>(
+          value: "HEADER_$title", 
+          enabled: false, 
+          child: Text(
+            title, 
+            style: GoogleFonts.poppins(
+              color: Colors.blueAccent, 
+              fontWeight: FontWeight.w700, 
+              fontSize: 12,
+              letterSpacing: 1.2
+            )
+          ),
+        )
+      );
+      for (var size in data) {
+        items.add(
+          DropdownMenuItem<String>(
+            value: size,
+            child: Padding(
+              padding: const EdgeInsets.only(left: 12.0),
+              child: Text(size, style: GoogleFonts.poppins(color: Colors.white, fontSize: 13)),
+            ),
+          )
+        );
+      }
+    }
+
+    if (widget.irisImages.length == 1) {
+      addSection("SQUARE", sizesSquare);
+    } else {
+      addSection("SQUARE", sizesSquare);
+      addSection("COLUMN", sizesCol);
+      addSection("ROW", sizesRow);
+      addSection("RECTANGLE", sizesRect);
+      addSection("ROUND", sizesRound);
+    }
+    return items;
+  }
+
   @override
   Widget build(BuildContext context) {
+    final bool isTwoIrises = widget.irisImages.length == 2;
+
     return Row(
       children: [
         Container(
           width: 220,
           decoration: const BoxDecoration(border: Border(right: BorderSide(color: Colors.white10))),
-          child: ListView.separated(
-            padding: const EdgeInsets.symmetric(vertical: 20),
-            itemCount: soloEffects.length,
-            separatorBuilder: (_, __) => const Gap(16),
-            itemBuilder: (context, index) {
-              final effect = soloEffects[index];
-              final bool isSelected = selectedEffect == effect['name'];
-              return GestureDetector(
-                onTap: () => setState(() => selectedEffect = effect['name']),
-                child: Column(
-                  children: [
-                    Container(
-                      width: 140, height: 140,
-                      decoration: BoxDecoration(
-                        color: effect['color'].withOpacity(0.2),
-                        borderRadius: BorderRadius.circular(8),
-                        border: isSelected ? Border.all(color: Colors.blueAccent, width: 2) : null,
-                      ),
-                      child: Icon(Icons.blur_on, color: effect['color'], size: 40),
-                    ),
-                    const Gap(8),
-                    Text(effect['name'].toUpperCase(), style: GoogleFonts.poppins(color: isSelected ? Colors.blueAccent : Colors.grey)),
-                  ],
+          child: Column(
+            children: [
+              
+              Text(
+                "SOLO EFFECTS",
+                style: GoogleFonts.poppins(
+                  color: Colors.white54,
+                  fontSize: 15,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: 1.5,
                 ),
-              );
-            },
+              ),
+              const Gap(12),
+              Expanded(
+                child: ListView.separated(
+                  padding: const EdgeInsets.symmetric(vertical: 10),
+                  itemCount: soloEffects.length,
+                  separatorBuilder: (_, __) => const Gap(16),
+                  itemBuilder: (context, index) {
+                    final effect = soloEffects[index];
+                    final bool isSelected = selectedEffect == effect['name'];
+                    return GestureDetector(
+                      onTap: () => setState(() => selectedEffect = effect['name']),
+                      child: Column(
+                        children: [
+                          Container(
+                            width: 200, height: 200,
+                            decoration: BoxDecoration(
+                              color: effect['color'].withOpacity(0.2),
+                              borderRadius: BorderRadius.circular(8),
+                              border: isSelected ? Border.all(color: Colors.blueAccent, width: 2) : null,
+                            ),
+                            child: Icon(Icons.blur_on, color: effect['color'], size: 40),
+                          ),
+                          const Gap(8),
+                          Text(effect['name'].toUpperCase(), style: GoogleFonts.poppins(color: isSelected ? Colors.blueAccent : Colors.grey)),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
           ),
         ),
+        
         Expanded(
           child: Stack(
             children: [
               Padding(padding: const EdgeInsets.all(40), child: Center(child: _buildCorrectLayoutView())),
+              
               Positioned(
-                bottom: 32, right: 32,
+                top: isTwoIrises ? 32 : null,
+                bottom: isTwoIrises ? null : 32,
+                right: 32,
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.end,
                   children: [
-                    if (widget.irisImages.length == 2) ...[
-                      _buildDropdown("Alignment", selectedAlignment, ['Row', 'Column', 'Square'], (v) => setState(() => selectedAlignment = v)),
-                      const Gap(12),
-                    ],
-                    _buildDropdown("Sizes", selectedSize, _getAvailableSizes(), (v) => setState(() => selectedSize = v)),
+                    Container(
+                      height: 60, width: 220, 
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      decoration: BoxDecoration(color: const Color(0xFF1E293B), borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.white12)),
+                      child: DropdownButtonHideUnderline(
+                        child: DropdownButton<String>(
+                          value: selectedSize, 
+                          hint: Text("Layout & Size", style: GoogleFonts.poppins(color: Colors.grey, fontSize: 15)), 
+                          
+                          dropdownColor: const Color(0xFF1E293B),
+                          icon: const Icon(Icons.keyboard_arrow_down, color: Colors.white70),
+                          isExpanded: true,
+                          items: _buildGroupedItems(),
+                          onChanged: (val) => setState(() => selectedSize = val),
+                        ),
+                      ),
+                    ),
                     const Gap(12),
-                    ElevatedButton(
-                      onPressed: selectedSize != null ? _handleShowPressed : null,
-                      style: ElevatedButton.styleFrom(backgroundColor: AppColors.primaryBlue, fixedSize: const Size(160, 50)),
-                      child: const Text("Show", style: TextStyle(color: Colors.white)),
-                    )
+                    
+                    Opacity(
+                      opacity: selectedSize != null ? 1.0 : 0.5,
+                      child: SizedBox(
+                        width: 220,
+                        child: GlobalSubmitButtonWidget(
+                          onPressed: selectedSize != null
+                              ? _handleShowPressed
+                              : () {}, 
+                          title: 'Show',
+                          icon: 'assets/Icons/photo.svg',
+                          svgColor: Colors.white,
+                        ),
+                      ),
+                    ),
                   ],
                 ),
               )
@@ -270,31 +382,32 @@ class _StudioEditorTabState extends State<StudioEditorTab> {
   Widget _buildCorrectLayoutView() {
     switch (widget.irisImages.length) {
       case 1: return Case1View(effect: selectedEffect, images: widget.irisImages);
-      case 2: return Case2View(effect: selectedEffect, images: widget.irisImages, duoEffects: [], onEffectSelected: (v){});
+      case 2: return Case2View(
+        effect: selectedEffect, 
+        images: widget.irisImages, 
+        duoEffects: duoEffects, 
+        onEffectSelected: (v) => setState(() => selectedEffect = v)
+      );
       default: return const Text("Select Layout", style: TextStyle(color: Colors.white));
     }
   }
-
-  List<String> _getAvailableSizes() => widget.irisImages.length == 1 ? sizesSquare : sizesRow;
-
-  Widget _buildDropdown(String label, String? value, List<String> items, Function(String?) onChanged) {
-    return Container(
-      height: 50, width: 160, padding: const EdgeInsets.symmetric(horizontal: 12),
-      decoration: BoxDecoration(color: const Color(0xFF1E293B), borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.white12)),
-      child: DropdownButtonHideUnderline(
-        child: DropdownButton<String>(
-          value: value, hint: Text(label, style: const TextStyle(color: Colors.grey)), dropdownColor: const Color(0xFF1E293B),
-          items: items.map((e) => DropdownMenuItem(value: e, child: Text(e, style: const TextStyle(color: Colors.white)))).toList(),
-          onChanged: onChanged,
-        ),
-      ),
-    );
-  }
 }
 
+
 // ============================================================================
-// TAB 2: PREVIEW (All Platforms Unified)
+// TAB 2: PREVIEW (Unchanged)
 // ============================================================================
+// import 'dart:io';
+// import 'dart:ui';
+
+// import 'package:flutter/foundation.dart';
+// import 'package:flutter/material.dart';
+// import 'package:flutter/widgets.dart';
+// import 'package:flutter_gap/flutter_gap.dart';
+// import 'package:flutter_inappwebview/flutter_inappwebview.dart';
+// import 'package:google_fonts/google_fonts.dart';
+// import 'package:url_launcher/url_launcher.dart';
+
 class PhotopeaPreviewTab extends StatefulWidget {
   final Map<String, dynamic> config;
   final VoidCallback onReset;
@@ -313,17 +426,10 @@ class _PhotopeaPreviewTabState extends State<PhotopeaPreviewTab> {
   InAppWebViewController? webViewController;
   bool isProcessing = true;
   
-  // URL Construction (Shared logic)
   String _buildPhotopeaUrl() {
     Map<String, dynamic> photopeaData = {
       "files": widget.config['images'].map((b64) => "data:image/png;base64,$b64").toList(),
-      "environment": {
-        "vmode": 2,
-        "intro": false,
-        "theme": 2,
-        "bg": "0F1116",
-        "customMenu": []
-      },
+      "environment": {"vmode": 2, "intro": false, "theme": 2, "bg": "0F1116", "customMenu": []},
       "script": "app.echoToOE('Init');"
     };
     return "https://www.photopea.com#${jsonEncode(photopeaData)}";
@@ -331,121 +437,66 @@ class _PhotopeaPreviewTabState extends State<PhotopeaPreviewTab> {
 
   @override
   Widget build(BuildContext context) {
-    // 🐧 LINUX FALLBACK: Stop here if Linux!
-    if (!kIsWeb && Platform.isLinux) {
-      return _buildLinuxFallback();
-    }
-
-    // 🪟 WINDOWS & MAC: Continue with Embedded WebView
+    if (!kIsWeb && Platform.isLinux) return _buildLinuxFallback();
     return Stack(
       children: [
         InAppWebView(
-          initialSettings: InAppWebViewSettings(
-            isInspectable: kDebugMode,
-            transparentBackground: true,
-          ),
+          initialSettings: InAppWebViewSettings(isInspectable: kDebugMode, transparentBackground: true),
           onWebViewCreated: (controller) async {
             webViewController = controller;
             controller.addJavaScriptHandler(handlerName: 'ProcessingComplete', callback: (args) {
-              if (mounted) {
-                setState(() => isProcessing = false);
-                _showCompletionDialog();
-              }
+              if (mounted) { setState(() => isProcessing = false); _showCompletionDialog(); }
             });
-
-            String url = _buildPhotopeaUrl();
-            await controller.loadUrl(urlRequest: URLRequest(url: WebUri(url)));
-            
-            // Auto-check timeout for UX
-            Future.delayed(const Duration(seconds: 8), () {
-               if (mounted && isProcessing) setState(() => isProcessing = false);
-            });
+            await controller.loadUrl(urlRequest: URLRequest(url: WebUri(_buildPhotopeaUrl())));
+            Future.delayed(const Duration(seconds: 8), () { if (mounted && isProcessing) setState(() => isProcessing = false); });
           },
         ),
-
         if (isProcessing) _buildLoadingOverlay(),
       ],
     );
   }
 
-  // 🐧 The Linux UI Widget
   Widget _buildLinuxFallback() {
     return Center(
       child: Container(
-        width: 400,
-        padding: const EdgeInsets.all(32),
-        decoration: BoxDecoration(
-          color: const Color(0xFF1E293B),
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: Colors.white10),
-        ),
+        width: 400, padding: const EdgeInsets.all(32),
+        decoration: BoxDecoration(color: const Color(0xFF1E293B), borderRadius: BorderRadius.circular(16), border: Border.all(color: Colors.white10)),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             const Icon(Icons.web_asset_off, size: 50, color: Colors.orangeAccent),
             const Gap(20),
-            Text(
-              "External Editor Required",
-              style: GoogleFonts.poppins(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w600),
-            ),
+            Text("External Editor Required", style: GoogleFonts.poppins(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w600)),
             const Gap(12),
-            Text(
-              "Embedded design tools are currently limited on Linux. Please open the studio in your browser.",
-              textAlign: TextAlign.center,
-              style: GoogleFonts.poppins(color: Colors.white70, fontSize: 13),
-            ),
+            Text("Embedded design tools are currently limited on Linux. Please open the studio in your browser.", textAlign: TextAlign.center, style: GoogleFonts.poppins(color: Colors.white70, fontSize: 13)),
             const Gap(30),
             SizedBox(
-              width: double.infinity,
-              height: 50,
+              width: double.infinity, height: 50,
               child: ElevatedButton.icon(
-                icon: const Icon(Icons.open_in_browser),
-                label: const Text("Open in Browser"),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.blueAccent,
-                  foregroundColor: Colors.white,
-                ),
+                icon: const Icon(Icons.open_in_browser), label: const Text("Open in Browser"),
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.blueAccent, foregroundColor: Colors.white),
                 onPressed: () async {
                   final Uri url = Uri.parse(_buildPhotopeaUrl());
-                  if (await canLaunchUrl(url)) {
-                    await launchUrl(url, mode: LaunchMode.externalApplication);
-                  } else {
-                    debugPrint("Could not launch $url");
-                  }
+                  if (await canLaunchUrl(url)) await launchUrl(url, mode: LaunchMode.externalApplication);
                 },
               ),
             ),
             const Gap(16),
-            TextButton(
-              onPressed: widget.onReset, // Go back to Tab 1
-              child: const Text("Back to Settings", style: TextStyle(color: Colors.grey)),
-            ),
+            TextButton(onPressed: widget.onReset, child: const Text("Back to Settings", style: TextStyle(color: Colors.grey))),
           ],
         ),
       ),
     );
   }
 
-  // Helper for loading state (Win/Mac)
   Widget _buildLoadingOverlay() {
     return Container(
       color: Colors.black87,
       child: Center(
         child: Container(
           padding: const EdgeInsets.all(40),
-          decoration: BoxDecoration(
-            color: const Color(0xFF1E293B),
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: Colors.blueAccent.withOpacity(0.3)),
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const CircularProgressIndicator(color: Colors.blueAccent),
-              const Gap(24),
-              Text("Designing Art...", style: GoogleFonts.poppins(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
-            ],
-          ),
+          decoration: BoxDecoration(color: const Color(0xFF1E293B), borderRadius: BorderRadius.circular(16), border: Border.all(color: Colors.blueAccent.withOpacity(0.3))),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [const CircularProgressIndicator(color: Colors.blueAccent), const Gap(24), Text("Designing Art...", style: GoogleFonts.poppins(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold))]),
         ),
       ),
     );
@@ -453,61 +504,24 @@ class _PhotopeaPreviewTabState extends State<PhotopeaPreviewTab> {
 
   void _showCompletionDialog() {
     showDialog(
-      context: context,
-      barrierDismissible: false, // User must choose an action
+      context: context, barrierDismissible: false,
       builder: (ctx) => Dialog(
-        backgroundColor: const Color(0xFF1E293B),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        backgroundColor: const Color(0xFF1E293B), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         child: Container(
-          width: 450,
-          padding: const EdgeInsets.all(30),
+          width: 450, padding: const EdgeInsets.all(30),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.check_circle_outline, color: Colors.greenAccent, size: 60),
-              const Gap(20),
-              Text(
-                "Masterpiece Ready",
-                style: GoogleFonts.poppins(
-                  color: Colors.white, 
-                  fontSize: 24, 
-                  fontWeight: FontWeight.bold
-                ),
-              ),
-              const Gap(10),
-              Text(
-                "The iris replacement is complete. You can now tweak the design or export it for printing.",
-                textAlign: TextAlign.center,
-                style: GoogleFonts.poppins(color: Colors.white70, fontSize: 14),
-              ),
+              const Icon(Icons.check_circle_outline, color: Colors.greenAccent, size: 60), const Gap(20),
+              Text("Masterpiece Ready", style: GoogleFonts.poppins(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold)),
+              const Gap(10), Text("The iris replacement is complete. You can now tweak the design or export it for printing.", textAlign: TextAlign.center, style: GoogleFonts.poppins(color: Colors.white70, fontSize: 14)),
               const Gap(30),
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  OutlinedButton(
-                    onPressed: () {
-                       Navigator.pop(ctx); // Close dialog, stay in editor
-                    },
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: Colors.white, 
-                      side: const BorderSide(color: Colors.white30)
-                    ),
-                    child: const Text("Edit Manually"),
-                  ),
+                  OutlinedButton(onPressed: () => Navigator.pop(ctx), style: OutlinedButton.styleFrom(foregroundColor: Colors.white, side: const BorderSide(color: Colors.white30)), child: const Text("Edit Manually")),
                   const Gap(16),
-                  ElevatedButton(
-                    onPressed: () {
-                      // 1. Trigger the download script in Photopea
-                      webViewController?.evaluateJavascript(source: "app.activeDocument.saveToOE('png');");
-                      // 2. Close the dialog
-                      Navigator.pop(ctx);
-                    },
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.blueAccent, // Use your AppColors.primaryBlue
-                      foregroundColor: Colors.white
-                    ),
-                    child: const Text("Download / Print"),
-                  ),
+                  ElevatedButton(onPressed: () { webViewController?.evaluateJavascript(source: "app.activeDocument.saveToOE('png');"); Navigator.pop(ctx); }, style: ElevatedButton.styleFrom(backgroundColor: Colors.blueAccent, foregroundColor: Colors.white), child: const Text("Download / Print")),
                 ],
               )
             ],

@@ -62,9 +62,9 @@ class InstructionView extends StatelessWidget {
                 height: 1.3,
               ),
               children: [
-                const TextSpan(text: 'Please proceed on the\nediting of '),
+                const TextSpan(text: 'Please proceed on the\naddition of '),
                 TextSpan(
-                  text: "$clientName \'s",
+                  text: "$clientName\'s",
                   style: const TextStyle(color: Color(0xFF007BFF)),
                 ),
                 const TextSpan(text: ' iris.'),

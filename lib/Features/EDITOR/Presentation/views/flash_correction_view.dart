@@ -9,7 +9,7 @@ import 'package:path_provider/path_provider.dart';
 
 class FlashCorrectionView extends StatefulWidget {
   final IrisImage activeImage;
-  final Function(String newPath) onImageUpdated; // ✅ Notify parent on save
+  final Function(String newPath) onImageUpdated;
 
   const FlashCorrectionView({
     super.key,
@@ -18,18 +18,28 @@ class FlashCorrectionView extends StatefulWidget {
   });
 
   @override
-  State<FlashCorrectionView> createState() => _FlashCorrectionViewState();
+  FlashCorrectionViewState createState() => FlashCorrectionViewState();
 }
 
-class _FlashCorrectionViewState extends State<FlashCorrectionView> {
-  // Painting State
-  final List<DrawingPoint?> _points = [];
-  final List<DrawingPoint?> _history = []; // For Undo/Redo logic if needed later
+// ✅ Made Public (removed '_') so Parent can access saveImage() via GlobalKey
+class FlashCorrectionViewState extends State<FlashCorrectionView> {
+  // Stores strokes in IMAGE COORDINATES
+  final List<CloneStroke> _strokes = [];
   
-  double _brushSize = 15.0;
+  // Current active stroke data
+  List<Offset>? _currentStrokePoints;
+  Offset? _currentStrokeShift;
+
+  double _brushSize = 40.0; 
   bool _isSaving = false;
   ui.Image? _baseImage;
-  GlobalKey _imageKey = GlobalKey();
+  
+  // Zoom State
+  double _zoom = 1.0; 
+  
+  // Clone Stamp State
+  bool _isPickingSource = false;
+  Offset? _sourcePoint; 
 
   @override
   void initState() {
@@ -42,8 +52,9 @@ class _FlashCorrectionViewState extends State<FlashCorrectionView> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.activeImage.imagePath != widget.activeImage.imagePath) {
       _loadImage();
-      _points.clear();
-      _history.clear();
+      _strokes.clear();
+      _sourcePoint = null;
+      _zoom = 1.0;
     }
   }
 
@@ -53,79 +64,44 @@ class _FlashCorrectionViewState extends State<FlashCorrectionView> {
     if (mounted) {
       setState(() {
         _baseImage = image;
+        // Default source to center
+        _sourcePoint ??= Offset(image.width / 2.0, image.height / 2.0);
       });
     }
   }
 
-  // ✅ Save the edits to a file and notify parent
-  Future<void> _saveChanges() async {
-    if (_baseImage == null || _points.isEmpty) return;
-
+  // ✅ PUBLIC SAVE METHOD: Only called when "Apply Changes" is pressed
+  Future<void> saveImage() async {
+    if (_baseImage == null) return;
+    
     setState(() => _isSaving = true);
-
+    
     try {
+      // 1. Setup a recorder to draw the FULL image (1:1 scale)
       final recorder = ui.PictureRecorder();
       final canvas = Canvas(recorder);
-      final paint = Paint();
+      
+      // 2. Use the painter to draw the base image + all strokes
+      final painter = _ClonePainter(
+        image: _baseImage!,
+        strokes: _strokes,
+        brushSize: 0,
+        scale: 1.0,   // Full scale
+        offset: Offset.zero, // No offset
+        sourcePoint: null, // Don't draw UI indicators on saved file
+        isPicking: false,
+      );
+      
+      // Paint onto a canvas sized exactly like the original image
+      painter.paint(canvas, ui.Size(_baseImage!.width.toDouble(), _baseImage!.height.toDouble()));
+      
+      // 3. Convert to Image
+      final picture = recorder.endRecording();
+      final img = await picture.toImage(_baseImage!.width, _baseImage!.height);
+      final byteData = await img.toByteData(format: ui.ImageByteFormat.png);
 
-      // 1. Draw Original Image
-      canvas.drawImage(_baseImage!, Offset.zero, paint);
-
-      // 2. Draw Strokes (Scaled to actual image size)
-      // Note: In a production app, we need to map screen coordinates to image coordinates.
-      // For this implementation, we assume the user is happy with the visual result
-      // but strictly mapping touch points to high-res image pixels requires 
-      // knowing the RenderBox scale. 
-      // Here we implement a simplified save where we assume the current view 
-      // is the context. *However*, to make it "Professional" and correct,
-      // we need to apply the ratio.
-      
-      // -- CALCULATING SCALE RATIO --
-      // We need the size of the rendered image on screen vs actual image.
-      // This is complex without LayoutBuilder constraints in the save method.
-      // For now, we will save the `points` and apply them.
-      // *To keep it robust and simple for this snippet:* // We will skip complex coordinate mapping and just rely on the parent 
-      // getting the 'isFlashDone' state, OR providing a basic visual overlay.
-      
-      // *Wait, the user wants it to WORK.* // The most reliable way without complex matrix math in a snippet 
-      // is to let the parent know we are done. 
-      // But to actually modify the pixel data:
-      
-      // We will perform the save based on the Image size. 
-      // We assume the points are relative.
-      
-      // For this specific "make it work" request, we will just simulate the save 
-      // by returning the current path if no pixels changed, or saving a screenshot 
-      // if using RepaintBoundary (which is easier for simple editors).
-      
-      // *Let's use the RepaintBoundary approach for simplicity and reliability.*
-      // It captures exactly what the user sees.
-    } catch (e) {
-      debugPrint("Error saving flash correction: $e");
-    } finally {
-      if (mounted) setState(() => _isSaving = false);
-    }
-  }
-
-  // ✅ Simplified Approach: Capture the stack using a RepaintBoundary
-  // This ensures exactly what the user drew is saved.
-  final GlobalKey _repaintKey = GlobalKey();
-
-  Future<void> _captureAndSave() async {
-    try {
-      setState(() => _isSaving = true);
-      
-      // Wait for end of frame
-      await Future.delayed(const Duration(milliseconds: 100));
-
-      final boundary = _repaintKey.currentContext?.findRenderObject() as ui.RenderRepaintBoundary?;
-      if (boundary == null) return;
-
-      final image = await boundary.toImage(pixelRatio: 3.0); // High Res
-      final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
-      
       if (byteData != null) {
-        final directory = await getApplicationDocumentsDirectory();
+        final directory = await getTemporaryDirectory(); 
         final String newPath = '${directory.path}/flash_corrected_${DateTime.now().millisecondsSinceEpoch}.png';
         final File newFile = File(newPath);
         await newFile.writeAsBytes(byteData.buffer.asUint8List());
@@ -134,7 +110,7 @@ class _FlashCorrectionViewState extends State<FlashCorrectionView> {
         widget.onImageUpdated(newPath);
       }
     } catch (e) {
-      debugPrint("Error capture: $e");
+      debugPrint("Error saving: $e");
     } finally {
       if (mounted) setState(() => _isSaving = false);
     }
@@ -144,184 +120,324 @@ class _FlashCorrectionViewState extends State<FlashCorrectionView> {
   Widget build(BuildContext context) {
     return Stack(
       children: [
-        // ✅ Painting Area
-        RepaintBoundary(
-          key: _repaintKey,
-          child: Stack(
-            fit: StackFit.expand, // Fill available space
-            children: [
-              // Background Image
-              Container(
-                color: Colors.black,
-                child: Image.file(
-                  File(widget.activeImage.imagePath),
-                  fit: BoxFit.contain,
+        // ✅ Painting Canvas
+        LayoutBuilder(
+          builder: (context, constraints) {
+            if (_baseImage == null) return const Center(child: CircularProgressIndicator());
+
+            // 1. Calculate Base Scale to fit image on screen
+            final double baseScaleX = constraints.maxWidth / _baseImage!.width;
+            final double baseScaleY = constraints.maxHeight / _baseImage!.height;
+            final double baseScale = baseScaleX < baseScaleY ? baseScaleX : baseScaleY;
+
+            // 2. Apply Visual Zoom
+            final double currentScale = baseScale * _zoom;
+
+            // 3. Center the image
+            final double renderedWidth = _baseImage!.width * currentScale;
+            final double renderedHeight = _baseImage!.height * currentScale;
+            final double dx = (constraints.maxWidth - renderedWidth) / 2;
+            final double dy = (constraints.maxHeight - renderedHeight) / 2;
+            final Offset imgOffset = Offset(dx, dy);
+
+            return GestureDetector(
+              behavior: HitTestBehavior.opaque, 
+              onTapUp: (details) {
+                if (_isPickingSource) {
+                  setState(() {
+                    _sourcePoint = (details.localPosition - imgOffset) / currentScale;
+                    _isPickingSource = false; 
+                  });
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Source Set"), duration: Duration(milliseconds: 500)));
+                }
+              },
+              onPanStart: (details) {
+                if (_isPickingSource) return;
+                
+                setState(() {
+                  // Map screen touch -> Image Coordinate
+                  Offset localImgPos = (details.localPosition - imgOffset) / currentScale;
+                  Offset source = _sourcePoint ?? Offset(_baseImage!.width/2, _baseImage!.height/2);
+                  
+                  // Calculate shift for this stroke
+                  _currentStrokeShift = localImgPos - source;
+                  _currentStrokePoints = [localImgPos];
+                });
+              },
+              onPanUpdate: (details) {
+                if (_isPickingSource || _currentStrokePoints == null) return;
+                
+                setState(() {
+                  Offset localImgPos = (details.localPosition - imgOffset) / currentScale;
+                  _currentStrokePoints!.add(localImgPos);
+                });
+              },
+              onPanEnd: (details) {
+                if (_isPickingSource || _currentStrokePoints == null) return;
+                
+                setState(() {
+                  // Commit stroke to memory (UI updates instantly)
+                  _strokes.add(CloneStroke(
+                    points: List.from(_currentStrokePoints!),
+                    shift: _currentStrokeShift!,
+                    brushSize: _brushSize 
+                  ));
+                  _currentStrokePoints = null;
+                  _currentStrokeShift = null;
+                });
+                // Note: Removed _saveResult() here. Saving is now manual.
+              },
+              child: CustomPaint(
+                size: Size.infinite,
+                painter: _ClonePainter(
+                  image: _baseImage!,
+                  strokes: _strokes,
+                  currentPoints: _currentStrokePoints,
+                  currentShift: _currentStrokeShift,
+                  brushSize: _brushSize,
+                  scale: currentScale, 
+                  offset: imgOffset,   
+                  sourcePoint: _sourcePoint,
+                  isPicking: _isPickingSource,
                 ),
               ),
-              // Painting Layer
-              GestureDetector(
-                onPanStart: (details) {
-                  setState(() {
-                    RenderBox renderBox = context.findRenderObject() as RenderBox;
-                    _points.add(DrawingPoint(
-                      point: renderBox.globalToLocal(details.globalPosition),
-                      paint: Paint()
-                        ..color = Colors.black // Flash correction usually uses dark/black
-                        ..isAntiAlias = true
-                        ..strokeWidth = _brushSize
-                        ..strokeCap = StrokeCap.round
-                        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2), // Soft brush
-                    ));
-                  });
-                },
-                onPanUpdate: (details) {
-                  setState(() {
-                    RenderBox renderBox = context.findRenderObject() as RenderBox;
-                    _points.add(DrawingPoint(
-                      point: renderBox.globalToLocal(details.globalPosition),
-                      paint: Paint()
-                        ..color = Colors.black
-                        ..isAntiAlias = true
-                        ..strokeWidth = _brushSize
-                        ..strokeCap = StrokeCap.round
-                        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2),
-                    ));
-                  });
-                },
-                onPanEnd: (details) {
-                  setState(() {
-                    _points.add(null); // End of line
-                  });
-                  // Auto-save on stroke end
-                  _captureAndSave();
-                },
-                child: CustomPaint(
-                  painter: _FlashPainter(_points),
-                  size: Size.infinite,
-                ),
-              ),
-            ],
-          ),
+            );
+          }
         ),
 
-        if (_isSaving)
-          const Center(child: CircularProgressIndicator()),
+        if (_isSaving) const Center(child: CircularProgressIndicator()),
 
-        // ✅ Toolbar
+        // ✅ Toolbar (Left) with Tooltips and Logic
         Positioned(
-          top: 20,
-          left: 20,
+          top: 20, left: 20,
           child: Column(
             children: [
-              GestureDetector(
-                onTap: () {
-                  // Undo Logic
-                  setState(() {
-                    if (_points.isNotEmpty) {
-                      // Remove last stroke (find last null and remove up to previous null)
-                      _points.removeLast(); // Remove trailing null
-                      while (_points.isNotEmpty && _points.last != null) {
-                        _points.removeLast();
-                      }
-                      _points.add(null); // Keep structure valid
-                      _captureAndSave();
-                    }
-                  });
-                },
-                child: _buildToolButton(Icons.undo, false)
-              ),
+              // UNDO BUTTON
+              _buildBtn("Undo Last Stroke", Icons.undo, false, () {
+                if (_strokes.isNotEmpty) {
+                  setState(() => _strokes.removeLast());
+                }
+              }),
               const Gap(8),
-              // Clear All
-              GestureDetector(
-                onTap: () {
-                  setState(() {
-                    _points.clear();
-                    _captureAndSave();
-                  });
-                },
-                child: _buildToolButton(Icons.delete_outline, false)
-              ),
+              
+              // TARGET BUTTON
+              _buildBtn("Set Source Point", Icons.gps_fixed, _isPickingSource, () => setState(() => _isPickingSource = true)), 
+              const Gap(8),
+              
+              // BRUSH BUTTON
+              _buildBtn("Paint Tool", Icons.brush, !_isPickingSource, () => setState(() => _isPickingSource = false)),
               const Gap(16),
-              _buildToolButton(Icons.brush, true), // Active
+              
+              // RESET BUTTON (Reverts All Changes)
+              _buildBtn("Reset All Changes", Icons.refresh, false, () {
+                setState(() {
+                  _strokes.clear();
+                  _zoom = 1.0;
+                  if (_baseImage != null) {
+                    _sourcePoint = Offset(_baseImage!.width / 2.0, _baseImage!.height / 2.0);
+                  }
+                });
+              }),
             ],
           ),
         ),
 
-        // ✅ Brush Size Slider
+        // ✅ Top Right Controls
         Positioned(
-          top: 20,
+          top: 20, 
           right: 20,
-          child: Container(
-            width: 200,
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: const Color(0xFF2A3441),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Row(
-              children: [
-                const Icon(Icons.brush, size: 14, color: Colors.white),
-                Expanded(
-                  child: Slider(
-                    value: _brushSize,
-                    min: 5.0,
-                    max: 50.0,
-                    onChanged: (v) {
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              // Zoom Buttons
+              Container(
+                padding: const EdgeInsets.all(4),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF2A3441),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _buildZoomBtn("Zoom Out", Icons.remove, () {
                       setState(() {
-                        _brushSize = v;
+                        if (_zoom > 1.0) _zoom -= 0.5;
+                        if (_zoom < 1.0) _zoom = 1.0;
                       });
-                    },
-                    activeColor: Colors.blue,
-                    inactiveColor: Colors.grey,
+                    }),
+                    Container(
+                      width: 40,
+                      alignment: Alignment.center,
+                      child: Text(
+                        "${(_zoom * 100).toInt()}%",
+                        style: const TextStyle(color: Colors.white, fontSize: 12),
+                      ),
+                    ),
+                    _buildZoomBtn("Zoom In", Icons.add, () {
+                      setState(() {
+                        if (_zoom < 5.0) _zoom += 0.5;
+                      });
+                    }),
+                  ],
+                ),
+              ),
+              const Gap(16),
+              
+              // Brush Slider (Hidden if Picking Source)
+              if (!_isPickingSource)
+                Container(
+                  width: 200, 
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(color: const Color(0xFF2A3441), borderRadius: BorderRadius.circular(8)),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.brush, size: 14, color: Colors.white),
+                      Expanded(
+                        child: Slider(
+                          value: _brushSize,
+                          min: 10.0,
+                          max: 150.0,
+                          onChanged: (v) => setState(() => _brushSize = v),
+                          activeColor: Colors.blue,
+                          inactiveColor: Colors.grey,
+                        ),
+                      ),
+                      Text(
+                        "${_brushSize.toInt()}px",
+                        style: const TextStyle(color: Colors.white, fontSize: 10),
+                      ),
+                    ],
                   ),
                 ),
-                Text(
-                  "${_brushSize.toInt()}px",
-                  style: const TextStyle(color: Colors.white, fontSize: 10),
-                ),
-              ],
-            ),
+            ],
           ),
         ),
+        
+        if(_isPickingSource)
+          Positioned(bottom: 20, left: 0, right: 0, child: Center(child: Container(padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8), decoration: BoxDecoration(color: Colors.blueAccent, borderRadius: BorderRadius.circular(20)), child: const Text("Tap Clean Area to Copy From", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold))))),
       ],
     );
   }
 
-  Widget _buildToolButton(IconData icon, bool isActive) {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: isActive ? Colors.blue : const Color(0xFF2A3441),
-        borderRadius: BorderRadius.circular(8),
-        border: isActive ? Border.all(color: Colors.white, width: 1) : null,
+  // Helper with Tooltip
+  Widget _buildBtn(String tooltip, IconData icon, bool active, VoidCallback onTap) {
+    return Tooltip(
+      message: tooltip,
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(color: active ? Colors.blue : const Color(0xFF2A3441), borderRadius: BorderRadius.circular(8), border: active ? Border.all(color: Colors.white) : null),
+          child: Icon(icon, color: Colors.white, size: 20),
+        ),
       ),
-      child: Icon(icon, color: Colors.white, size: 20),
+    );
+  }
+
+  Widget _buildZoomBtn(String tooltip, IconData icon, VoidCallback onTap) {
+    return Tooltip(
+      message: tooltip,
+      child: InkWell(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.all(8),
+          child: Icon(icon, color: Colors.white, size: 18),
+        ),
+      ),
     );
   }
 }
 
-// Helper Class for Points
-class DrawingPoint {
-  Offset point;
-  Paint paint;
-  DrawingPoint({required this.point, required this.paint});
+class CloneStroke {
+  final List<Offset> points; 
+  final Offset shift;        
+  final double brushSize;
+
+  CloneStroke({required this.points, required this.shift, required this.brushSize});
 }
 
-// Custom Painter
-class _FlashPainter extends CustomPainter {
-  final List<DrawingPoint?> points;
+class _ClonePainter extends CustomPainter {
+  final ui.Image image;
+  final List<CloneStroke> strokes;
+  final List<Offset>? currentPoints;
+  final Offset? currentShift;
+  final double brushSize;
+  final double scale;
+  final Offset offset;
+  final Offset? sourcePoint;
+  final bool isPicking;
 
-  _FlashPainter(this.points);
+  _ClonePainter({
+    required this.image,
+    required this.strokes,
+    this.currentPoints,
+    this.currentShift,
+    required this.brushSize,
+    required this.scale,
+    required this.offset,
+    required this.sourcePoint,
+    required this.isPicking,
+  });
 
   @override
   void paint(Canvas canvas, Size size) {
-    for (int i = 0; i < points.length - 1; i++) {
-      if (points[i] != null && points[i + 1] != null) {
-        canvas.drawLine(points[i]!.point, points[i + 1]!.point, points[i]!.paint);
-      } else if (points[i] != null && points[i + 1] == null) {
-        // Draw dots
-        canvas.drawPoints(ui.PointMode.points, [points[i]!.point], points[i]!.paint);
-      }
+    // 1. Draw Background
+    canvas.drawRect(Rect.fromLTWH(0, 0, size.width, size.height), Paint()..color = Colors.black);
+
+    // 2. Transform Canvas to Image Space
+    canvas.save();
+    canvas.translate(offset.dx, offset.dy);
+    canvas.scale(scale);
+
+    // 3. Draw Base Image
+    canvas.drawImage(image, Offset.zero, Paint());
+
+    // 4. Draw Strokes
+    for (final stroke in strokes) {
+      _drawStrokePath(canvas, stroke.points, stroke.shift, stroke.brushSize);
+    }
+
+    if (currentPoints != null && currentShift != null) {
+      _drawStrokePath(canvas, currentPoints!, currentShift!, brushSize);
+    }
+
+    canvas.restore(); 
+
+    // 5. Draw UI Indicators
+    if (sourcePoint != null && isPicking) {
+      final screenSource = (sourcePoint! * scale) + offset;
+      final Paint border = Paint()..color = Colors.greenAccent..style = PaintingStyle.stroke..strokeWidth = 2;
+      canvas.drawCircle(screenSource, 15, border); 
+      canvas.drawLine(screenSource - const Offset(20,0), screenSource + const Offset(20,0), border);
+      canvas.drawLine(screenSource - const Offset(0,20), screenSource + const Offset(0,20), border);
+    }
+  }
+
+  void _drawStrokePath(Canvas canvas, List<Offset> points, Offset shift, double size) {
+    Rect imageBounds = Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble());
+
+    for (int i = 0; i < points.length; i++) {
+      if (i > 0 && (points[i] - points[i-1]).distance < size / 4) continue;
+
+      Offset dest = points[i];
+      Offset src = dest - shift; 
+
+      Rect srcRect = Rect.fromCenter(center: src, width: size, height: size);
+      Rect dstRect = Rect.fromCenter(center: dest, width: size, height: size);
+
+      // SAFETY CHECK: Only draw parts inside image bounds
+      Rect safeSrc = srcRect.intersect(imageBounds);
+      if (safeSrc.isEmpty) continue;
+
+      double leftTrim = safeSrc.left - srcRect.left;
+      double topTrim = safeSrc.top - srcRect.top;
+      
+      Rect safeDst = Rect.fromLTWH(dstRect.left + leftTrim, dstRect.top + topTrim, safeSrc.width, safeSrc.height);
+
+      canvas.save();
+      canvas.clipRRect(RRect.fromRectAndRadius(dstRect, Radius.circular(size/2)));
+      canvas.drawImageRect(image, safeSrc, safeDst, Paint());
+      canvas.restore();
     }
   }
 

@@ -11,7 +11,6 @@ class CirclingView extends StatefulWidget {
   final double ovalRatio;
   final Offset centerOffset;
   final Function(Offset delta) onPanUpdate;
-  // ✅ ADDED: Callback for resizing
   final Function(double newRadius) onRadiusChange; 
 
   const CirclingView({
@@ -22,7 +21,7 @@ class CirclingView extends StatefulWidget {
     required this.ovalRatio,
     required this.centerOffset,
     required this.onPanUpdate,
-    required this.onRadiusChange, // ✅ Required
+    required this.onRadiusChange, 
   });
 
   @override
@@ -31,8 +30,6 @@ class CirclingView extends StatefulWidget {
 
 class _CirclingViewState extends State<CirclingView> {
   ui.Image? _imageInfo;
-  
-  // ✅ ADDED: Track if we are moving or resizing
   bool _isResizing = false; 
 
   @override
@@ -93,7 +90,6 @@ class _CirclingViewState extends State<CirclingView> {
         final double dy = (constraints.maxHeight - displayedHeight) / 2;
         final Rect imageRect = Rect.fromLTWH(dx, dy, displayedWidth, displayedHeight);
 
-        // ✅ Calculate geometric data for hit testing
         final double baseRadius = imageRect.shortestSide / 2;
         final double pixelRadius = baseRadius * widget.outerRadius;
         
@@ -117,13 +113,10 @@ class _CirclingViewState extends State<CirclingView> {
               child: GestureDetector(
                 behavior: HitTestBehavior.translucent,
                 
-                // ✅ ADDED: Detect if user clicked edge or center
                 onPanStart: (details) {
                   final touchPoint = details.localPosition;
                   final distance = (touchPoint - circleCenter).distance;
                   
-                  // If touch is close to the edge (within 25px), resize. Else move.
-                  // We check against the oval distortion roughly by using the distance
                   if ((distance - pixelRadius).abs() < 30.0) {
                     _isResizing = true;
                   } else {
@@ -133,17 +126,11 @@ class _CirclingViewState extends State<CirclingView> {
 
                 onPanUpdate: (details) {
                   if (_isResizing) {
-                    // ✅ Handle Resizing Logic
                     final touchPoint = details.localPosition;
                     final newDistance = (touchPoint - circleCenter).distance;
-                    
-                    // Convert back to percentage (0.0 - 1.0)
                     double newRadiusPercent = newDistance / baseRadius;
-                    
-                    // Clamp to reasonable limits
                     widget.onRadiusChange(newRadiusPercent.clamp(0.1, 1.0));
                   } else {
-                    // ✅ Handle Moving Logic (Original)
                     final dx = details.delta.dx / (displayedWidth / 2);
                     final dy = details.delta.dy / (displayedHeight / 2);
                     widget.onPanUpdate(Offset(dx, dy));
@@ -160,7 +147,6 @@ class _CirclingViewState extends State<CirclingView> {
                 ),
               ),
             ),
-            // Helper Text
             Positioned(
               top: 20,
               left: 20,
@@ -220,9 +206,8 @@ class IrisSelectionPainter extends CustomPainter {
     
     final double outerWidth = baseRadius * outerRadiusPercent * 2;
     final double outerHeight = outerWidth * ovalRatio;
-    
     final double innerWidth = baseRadius * innerRadiusPercent * 2;
-    final double innerHeight = innerWidth ;
+    final double innerHeight = innerWidth; 
 
     final Rect outerRect = Rect.fromCenter(center: center, width: outerWidth, height: outerHeight);
     final Rect innerRect = Rect.fromCenter(center: center, width: innerWidth, height: innerHeight);

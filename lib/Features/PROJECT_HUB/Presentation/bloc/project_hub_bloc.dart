@@ -1,6 +1,7 @@
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:equatable/equatable.dart';
 import 'package:flutter/foundation.dart'; // For debugPrint
+import 'package:iris_designer/Core/Services/hive_service.dart'; // ✅ Import HiveService
 import 'package:iris_designer/Features/PROJECT_HUB/Domain/entities/project_details.dart';
 import 'package:iris_designer/Features/PROJECT_HUB/Domain/usecases/load_project_data_usecase.dart';
 import 'package:iris_designer/Features/PROJECT_HUB/Domain/usecases/upload_image_usecase.dart';
@@ -129,6 +130,10 @@ class ProjectHubBloc extends Bloc<ProjectHubEvent, ProjectHubState> {
         // Emit the state with the LOCAL file path immediately
         emit(currentState.copyWith(project: updatedProject));
 
+        // ✅ SAVE TO HIVE: Update session with new image
+        await HiveService.addImageToSession(event.projectId, event.imagePath);
+        debugPrint("💾 BLOC: Image saved to Hive for session ${event.projectId}");
+
         // Now perform the actual upload in the background
         final result = await uploadImageUseCase(
           event.projectId,
@@ -155,7 +160,7 @@ class ProjectHubBloc extends Bloc<ProjectHubEvent, ProjectHubState> {
     // -----------------------------------------------------------------
     // EVENT: Remove Image
     // -----------------------------------------------------------------
-    on<RemoveImageTriggered>((event, emit) {
+    on<RemoveImageTriggered>((event, emit) async {
       if (state is ProjectHubLoaded) {
         final currentState = state as ProjectHubLoaded;
         
@@ -172,6 +177,13 @@ class ProjectHubBloc extends Bloc<ProjectHubEvent, ProjectHubState> {
         
         // 3. Emit new state
         emit(currentState.copyWith(project: updatedProject));
+
+        // ✅ SAVE TO HIVE: Remove image from session
+        await HiveService.removeImageFromSession(
+          currentState.project.projectId, 
+          event.imagePath
+        );
+        debugPrint("💾 BLOC: Image removed from Hive for session ${currentState.project.projectId}");
       }
     });
   }
