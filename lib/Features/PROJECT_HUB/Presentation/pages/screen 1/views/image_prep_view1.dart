@@ -35,16 +35,12 @@ class _ImagePrepViewState extends State<ImagePrepView> {
   }
 
   void _initData() {
+    // 1. Trigger Load (The BLoC will now fetch saved images automatically)
     context.read<ProjectHubBloc>().add(LoadProjectData(widget.session.id));
 
+    // 2. Only handle "returnedImages" (new edits coming back from the editor)
     if (widget.returnedImages != null && widget.returnedImages!.isNotEmpty) {
       for (var path in widget.returnedImages!) {
-        context.read<ProjectHubBloc>().add(
-          UploadImageTriggered(projectId: widget.session.id, imagePath: path),
-        );
-      }
-    } else if (widget.session.importedPhotos.isNotEmpty) {
-      for (var path in widget.session.importedPhotos) {
         context.read<ProjectHubBloc>().add(
           UploadImageTriggered(projectId: widget.session.id, imagePath: path),
         );

@@ -90,17 +90,25 @@ class ProjectHubBloc extends Bloc<ProjectHubEvent, ProjectHubState> {
     on<LoadProjectData>((event, emit) async {
       emit(ProjectHubLoading());
 
-      // Even if loading fails or returns nothing, we need to START with a valid Loaded state
-      // so the user can start adding images.
-      final emptyProject = ProjectDetails(
+      // ✅ FIX: Fetch Session from Hive directly to get saved images
+      final session = HiveService.getSessionById(event.projectId);
+      
+      List<String> savedImages = [];
+      String clientName = 'Client';
+
+      if (session != null) {
+        savedImages = session.importedPhotos; // <--- The key fix: getting saved photos
+        clientName = session.clientName;
+      }
+
+      // Initialize State with Saved Data
+      final project = ProjectDetails(
         projectId: event.projectId,
-        clientName: 'Client', // Or fetch name
-        imageUrls: [],
+        clientName: clientName,
+        imageUrls: savedImages,
       );
 
-      // If you have real fetching logic, use it here.
-      // But ensure you emit ProjectHubLoaded(emptyProject) if fetch fails or is empty.
-      emit(ProjectHubLoaded(emptyProject));
+      emit(ProjectHubLoaded(project));
     });
 
     // -----------------------------------------------------------------
