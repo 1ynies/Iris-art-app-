@@ -10,12 +10,12 @@ class GlobalSubmitButtonWidget extends StatelessWidget {
   late Color svgColor;
   late VoidCallback onPressed;
   late String title;
-  GlobalSubmitButtonWidget( {
+  GlobalSubmitButtonWidget({
     super.key,
     required this.onPressed,
     required this.title,
     required this.icon,
-    required this.svgColor 
+    required this.svgColor,
   });
   @override
   Widget build(BuildContext context) {
@@ -38,7 +38,7 @@ class GlobalSubmitButtonWidget extends StatelessWidget {
             padding: const EdgeInsets.symmetric(vertical: 15, horizontal: 30),
           ),
           child: Row(
-            mainAxisAlignment:  MainAxisAlignment.center,
+            mainAxisAlignment: MainAxisAlignment.center,
             children: [
               Text(
                 title,
@@ -49,8 +49,8 @@ class GlobalSubmitButtonWidget extends StatelessWidget {
                   ),
                 ),
               ),
-              const Gap(8), 
-              SvgPicture.asset(icon, color: svgColor, height: 20 , width: 20 ),
+              const Gap(8),
+              SvgPicture.asset(icon, color: svgColor, height: 20, width: 20),
             ],
           ),
         ),

@@ -4,7 +4,7 @@ import 'package:flutter_gap/flutter_gap.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:iris_designer/Core/Config/Theme.dart';
-import 'package:iris_designer/Core/Services/hive_service.dart'; 
+import 'package:iris_designer/Core/Services/hive_service.dart';
 import 'package:iris_designer/Core/Shared/Widgets/global_submit_button_widget.dart';
 import 'package:iris_designer/Core/Utils/toast_service.dart';
 import 'package:iris_designer/Features/ONBOARDING/Domain/entities/client_session.dart';
@@ -28,7 +28,7 @@ class _RightIntakeFormViewState extends State<RightIntakeFormView> {
   late var _nameController = TextEditingController();
   late var _emailController = TextEditingController();
   String? _countryError;
-  
+
   // ✅ NEW: State to track if we found a match
   bool _canResume = false;
   ClientSession? _matchedSession;
@@ -60,7 +60,9 @@ class _RightIntakeFormViewState extends State<RightIntakeFormView> {
       final String newText = text[0].toUpperCase() + text.substring(1);
       _nameController.value = _nameController.value.copyWith(
         text: newText,
-        selection: TextSelection.collapsed(offset: _nameController.selection.baseOffset),
+        selection: TextSelection.collapsed(
+          offset: _nameController.selection.baseOffset,
+        ),
         composing: TextRange.empty,
       );
     }
@@ -82,11 +84,12 @@ class _RightIntakeFormViewState extends State<RightIntakeFormView> {
     final activeSessions = HiveService.getActiveSessions();
     try {
       final match = activeSessions.firstWhere(
-        (s) => s.clientName.toLowerCase() == name.toLowerCase() &&
-               s.email.toLowerCase() == email.toLowerCase() &&
-               s.country.toLowerCase() == country.toLowerCase()
+        (s) =>
+            s.clientName.toLowerCase() == name.toLowerCase() &&
+            s.email.toLowerCase() == email.toLowerCase() &&
+            s.country.toLowerCase() == country.toLowerCase(),
       );
-      
+
       if (!_canResume) {
         setState(() {
           _canResume = true;
@@ -126,10 +129,13 @@ class _RightIntakeFormViewState extends State<RightIntakeFormView> {
         showDialog(
           context: context,
           barrierDismissible: false,
-          builder: (context) => const Center(child: CircularProgressIndicator()),
+          builder: (context) =>
+              const Center(child: CircularProgressIndicator()),
         );
-        
-        await Future.delayed(const Duration(milliseconds: 800)); // Small delay for UX
+
+        await Future.delayed(
+          const Duration(milliseconds: 800),
+        ); // Small delay for UX
         if (mounted) {
           Navigator.pop(context); // Close loader
           ToastService.showSuccess(
@@ -139,7 +145,7 @@ class _RightIntakeFormViewState extends State<RightIntakeFormView> {
           );
           context.goNamed('image-prep', extra: _matchedSession);
         }
-      } 
+      }
       // ❌ ELSE: Create New
       else {
         context.read<OnboardingBloc>().add(
@@ -203,15 +209,31 @@ class _RightIntakeFormViewState extends State<RightIntakeFormView> {
                             ),
                           ),
                         ),
-                        IconButton(
-                          onPressed: () {
-                            showDialog(
-                              context: context,
-                              builder: (context) => const SessionHistoryDialog(),
-                            );
-                          },
-                          tooltip: "View History (24h)",
-                          icon: const Icon(Icons.history, color: Colors.blueAccent),
+                        Row(
+                          children: [
+                            IconButton(
+                              onPressed: () {
+                                showDialog(
+                                  context: context,
+                                  builder: (context) =>
+                                      const SessionHistoryDialog(),
+                                );
+                              },
+                              tooltip: "View History (24h)",
+                              icon: const Icon(
+                                Icons.history,
+                                color: Colors.blueAccent,
+                              ),
+                            ),
+                            IconButton(
+                              onPressed: () => _showIntakeHelpDialog(context),
+                              tooltip: "Need instructions ?",
+                              icon: const Icon(
+                                Icons.help_outline,
+                                color: Colors.grey,
+                              ),
+                            ),
+                          ],
                         ),
                       ],
                     ),
@@ -232,24 +254,29 @@ class _RightIntakeFormViewState extends State<RightIntakeFormView> {
                     _buildLabel("Name"),
                     const Gap(8),
                     TextFieldWidget(
-                      label: 'eg Jane Doe ',
+                      label: 'Jane Doe',
                       prefixicon: 'assets/Icons/user-mini.svg',
                       autofocus: false,
                       controller: _nameController,
-                      validator: (value) => (value == null || value.trim().isEmpty) ? 'Please enter a client name' : null,
+                      validator: (value) =>
+                          (value == null || value.trim().isEmpty)
+                          ? 'Please enter the client\'s name'
+                          : null,
                     ),
                     const SizedBox(height: 5),
 
                     _buildLabel("Email"),
                     const Gap(8),
                     TextFieldWidget(
-                      label: "e.g Jane@example.com",
+                      label: "jane@example.com",
                       prefixicon: 'assets/Icons/envelope-solid.svg',
                       autofocus: false,
                       controller: _emailController,
                       validator: (value) {
-                        if (value == null || value.trim().isEmpty) return 'Please enter an email';
-                        if (!RegExp(r'^[^@]+@[^@]+\.[^@]+').hasMatch(value)) return 'Please enter a valid email';
+                        if (value == null || value.trim().isEmpty)
+                          return 'Please enter the client\'s email';
+                        if (!RegExp(r'^[^@]+@[^@]+\.[^@]+').hasMatch(value))
+                          return 'Please enter a valid email';
                         return null;
                       },
                     ),
@@ -265,7 +292,13 @@ class _RightIntakeFormViewState extends State<RightIntakeFormView> {
                     if (_countryError != null)
                       Padding(
                         padding: const EdgeInsets.only(top: 6, left: 12),
-                        child: Text(_countryError!, style: const TextStyle(color: Colors.red, fontSize: 12)),
+                        child: Text(
+                          _countryError!,
+                          style: const TextStyle(
+                            color: Colors.red,
+                            fontSize: 12,
+                          ),
+                        ),
                       ),
 
                     const SizedBox(height: 32),
@@ -277,13 +310,14 @@ class _RightIntakeFormViewState extends State<RightIntakeFormView> {
                           child: BlocBuilder<OnboardingBloc, OnboardingState>(
                             builder: (context, state) {
                               final bool isLoading = state is OnboardingLoading;
-                              
+
                               // ✅ Dynamic Button Text Logic
                               String buttonTitle = "Start session";
                               if (isLoading) {
                                 buttonTitle = "Starting session...";
                               } else if (_canResume) {
-                                buttonTitle = "Jump back in"; // ✨ Dynamic change
+                                buttonTitle =
+                                    "Jump back in"; // ✨ Dynamic change
                               }
 
                               return Opacity(
@@ -292,9 +326,13 @@ class _RightIntakeFormViewState extends State<RightIntakeFormView> {
                                   title: buttonTitle,
                                   onPressed: isLoading ? () {} : _submitForm,
                                   // Change icon if resuming
-                                  icon: _canResume ? 'assets/Icons/arrow_right.svg' : 'assets/Icons/chevron.svg', 
+                                  icon: _canResume
+                                      ? 'assets/Icons/arrow_right.svg'
+                                      : 'assets/Icons/chevron.svg',
                                   // Fallback icon if you don't have arrow_right: just keep chevron
-                                  svgColor: isLoading ? Colors.white : Colors.white38,
+                                  svgColor: isLoading
+                                      ? Colors.white
+                                      : Colors.white38,
                                 ),
                               );
                             },
@@ -302,24 +340,24 @@ class _RightIntakeFormViewState extends State<RightIntakeFormView> {
                         ),
                       ],
                     ),
-                    const SizedBox(height: 16),
+                    // const SizedBox(height: 16),
 
-                    Align(
-                      alignment: Alignment.centerRight,
-                      child: TextButton(
-                        onPressed: () => _showIntakeHelpDialog(context),
-                        child: Text(
-                          "Need help?",
-                          style: GoogleFonts.poppins(
-                            textStyle: const TextStyle(
-                              fontSize: 15,
-                              fontWeight: FontWeight.w400,
-                              color: Color(0xFF687890),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
+                    // Align(
+                    //   alignment: Alignment.centerRight,
+                    //   child: TextButton(
+                    //     onPressed: () => _showIntakeHelpDialog(context),
+                    //     child: Text(
+                    //       "Need help?",
+                    //       style: GoogleFonts.poppins(
+                    //         textStyle: const TextStyle(
+                    //           fontSize: 15,
+                    //           fontWeight: FontWeight.w400,
+                    //           color: Color(0xFF687890),
+                    //         ),
+                    //       ),
+                    //     ),
+                    //   ),
+                    // ),
                   ],
                 ),
               ),
@@ -335,8 +373,15 @@ class _RightIntakeFormViewState extends State<RightIntakeFormView> {
     return RichText(
       text: TextSpan(
         text: text,
-        style: GoogleFonts.poppins(textStyle: const TextStyle(fontSize: 20, fontWeight: FontWeight.w400)),
-        children: const [TextSpan(text: ' *', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.red))],
+        style: GoogleFonts.poppins(
+          textStyle: const TextStyle(fontSize: 20, fontWeight: FontWeight.w400),
+        ),
+        children: const [
+          TextSpan(
+            text: ' *',
+            style: TextStyle(fontWeight: FontWeight.bold, color: Colors.red),
+          ),
+        ],
       ),
     );
   }
@@ -348,7 +393,9 @@ class _RightIntakeFormViewState extends State<RightIntakeFormView> {
       builder: (BuildContext context) {
         return AlertDialog(
           backgroundColor: const Color(0xFF1E293B),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
           titlePadding: const EdgeInsets.all(24),
           contentPadding: const EdgeInsets.symmetric(horizontal: 24),
           actionsPadding: const EdgeInsets.all(24),
@@ -356,11 +403,25 @@ class _RightIntakeFormViewState extends State<RightIntakeFormView> {
             children: [
               Container(
                 padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(color: Colors.blueAccent.withOpacity(0.1), borderRadius: BorderRadius.circular(8)),
-                child: const Icon(Icons.tips_and_updates, color: Colors.blueAccent, size: 20),
+                decoration: BoxDecoration(
+                  color: Colors.blueAccent.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Icon(
+                  Icons.tips_and_updates,
+                  color: Colors.blueAccent,
+                  size: 20,
+                ),
               ),
               const Gap(12),
-              Text("Intake Guide", style: GoogleFonts.poppins(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 18)),
+              Text(
+                "Intake Guide",
+                style: GoogleFonts.poppins(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 18,
+                ),
+              ),
             ],
           ),
           content: SizedBox(
@@ -369,9 +430,19 @@ class _RightIntakeFormViewState extends State<RightIntakeFormView> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _buildHelpStep(number: "1", title: "Client Details", description: "Fill in the client's name, email, and location."),
+                _buildHelpStep(
+                  number: "1",
+                  title: "Client Details",
+                  description:
+                      "Fill in the client's name, email, and location.",
+                ),
                 const Gap(24),
-                _buildHelpStep(number: "2", title: "Start Session", description: "Click 'Start Session' to proceed to image upload."),
+                _buildHelpStep(
+                  number: "2",
+                  title: "Start Session",
+                  description:
+                      "Click 'Start Session' to proceed to image upload.",
+                ),
               ],
             ),
           ),
@@ -381,8 +452,19 @@ class _RightIntakeFormViewState extends State<RightIntakeFormView> {
               height: 45,
               child: ElevatedButton(
                 onPressed: () => Navigator.of(context).pop(),
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.blueAccent, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
-                child: Text("Got it", style: GoogleFonts.poppins(color: Colors.white, fontWeight: FontWeight.w600)),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.blueAccent,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                ),
+                child: Text(
+                  "Got it",
+                  style: GoogleFonts.poppins(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
               ),
             ),
           ],
@@ -391,23 +473,55 @@ class _RightIntakeFormViewState extends State<RightIntakeFormView> {
     );
   }
 
-  Widget _buildHelpStep({required String number, required String title, required String description}) {
+  Widget _buildHelpStep({
+    required String number,
+    required String title,
+    required String description,
+  }) {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Container(
-          width: 24, height: 24, alignment: Alignment.center, margin: const EdgeInsets.only(top: 2),
-          decoration: BoxDecoration(color: Colors.transparent, shape: BoxShape.circle, border: Border.all(color: Colors.grey.withOpacity(0.5))),
-          child: Text(number, style: GoogleFonts.poppins(color: Colors.grey, fontWeight: FontWeight.w600, fontSize: 12)),
+          width: 24,
+          height: 24,
+          alignment: Alignment.center,
+          margin: const EdgeInsets.only(top: 2),
+          decoration: BoxDecoration(
+            color: Colors.transparent,
+            shape: BoxShape.circle,
+            border: Border.all(color: Colors.grey.withOpacity(0.5)),
+          ),
+          child: Text(
+            number,
+            style: GoogleFonts.poppins(
+              color: Colors.grey,
+              fontWeight: FontWeight.w600,
+              fontSize: 12,
+            ),
+          ),
         ),
         const Gap(16),
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(title, style: GoogleFonts.poppins(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 14)),
+              Text(
+                title,
+                style: GoogleFonts.poppins(
+                  color: Colors.white,
+                  fontWeight: FontWeight.w600,
+                  fontSize: 14,
+                ),
+              ),
               const Gap(4),
-              Text(description, style: GoogleFonts.poppins(color: Colors.grey[400], fontSize: 12, height: 1.5)),
+              Text(
+                description,
+                style: GoogleFonts.poppins(
+                  color: Colors.grey[400],
+                  fontSize: 12,
+                  height: 1.5,
+                ),
+              ),
             ],
           ),
         ),
