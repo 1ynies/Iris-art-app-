@@ -4,7 +4,7 @@ import 'dart:io';
 import 'package:dotted_border/dotted_border.dart';
 import 'package:image/image.dart' as img;
 import 'package:file_picker/file_picker.dart';
-import 'package:flutter/foundation.dart'; // For kDebugMode
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_gap/flutter_gap.dart';
@@ -32,6 +32,31 @@ import 'package:iris_designer/Features/EDITOR/Presentation/views/flash_correctio
 import 'package:iris_designer/Features/ONBOARDING/Domain/entities/client_session.dart';
 import 'package:iris_designer/Features/PROJECT_HUB/Presentation/bloc/project_hub_bloc.dart';
 
+import 'package:iris_designer/Features/EDITOR/Presentation/widgets/queue_image_item.dart';
+
+// FIXED: Added a parameter class for Isolate processing to prevent UI lag
+class CirclingParams {
+  final String inputPath;
+  final String outputPath;
+  final double outerRadiusVal;
+  final double innerRadiusVal;
+  final double ovalRatio;
+  final Offset outerOffset;
+  final Offset innerOffset;
+  final Size viewSize;
+
+  CirclingParams({
+    required this.inputPath,
+    required this.outputPath,
+    required this.outerRadiusVal,
+    required this.innerRadiusVal,
+    required this.ovalRatio,
+    required this.outerOffset,
+    required this.innerOffset,
+    required this.viewSize,
+  });
+}
+
 class IrisEditingScreen extends StatefulWidget {
   final Map<String, dynamic> extra;
 
@@ -42,24 +67,20 @@ class IrisEditingScreen extends StatefulWidget {
 }
 
 class _IrisEditingScreenState extends State<IrisEditingScreen> {
-  // --- ENGINE CONFIG ---
   final String photopeaUrl = 'https://www.photopea.com';
   bool _isProcessing = false;
 
-  // --- DATA ---
   late ClientSession _session;
   List<IrisImage> _projectImages = [];
   int _selectedImageIndex = 0;
   int _currentStep = 0;
 
-  // --- TOOLS ---
   double _outerRadiusVal = 0.5;
   double _innerRadiusVal = 0.2;
   double _ovalRatio = 1.0;
   Offset _outerCircleOffset = Offset.zero;
   Offset _innerCircleOffset = Offset.zero;
 
-  /// Last known size of the CirclingView layout. Used to map overlay → image precisely.
   Size? _circlingViewSize;
 
   double _brightness = 0.0;
@@ -67,7 +88,6 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
   double _saturation = 0.0;
   double _hue = 0.0;
 
-  // ✅ POLLING TIMER
   Timer? _readinessTimer;
 
   @override
@@ -101,21 +121,15 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
   IrisImage get _activeImage => _projectImages[_selectedImageIndex];
   bool get _allImagesDone => _projectImages.every((img) => img.isFullyEdited);
 
-  // --- ACTIONS ---
-
   Future<void> _switchImage(int index) async {
     setState(() {
       _selectedImageIndex = index;
       _currentStep = 0;
       _resetTools();
     });
-
-    // Load new image in Photopea
-    debugPrint("🔄 Switching to image $index");
     await PhotopeaService().loadImage(_projectImages[index].imagePath);
   }
 
-  /// Removes an image from the queue and from the raw images list app-wide.
   void _removeImageFromQueue(int index) {
     if (_projectImages.length <= 1) {
       ToastService.showError(
@@ -161,59 +175,104 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
     _hue = 0.0;
   }
 
-  /// Inner circle shrink factor: inner cleared area uses radius * k (< 1) so the "small circle" is smaller.
-  static const double _innerShrink = 0.85;
-
-  /// Applies circling in Dart to match overlay: keep only the ring between outer (blue) and inner (red).
-  /// Uses view→image mapping when _circlingViewSize is set. Clears outside outer ellipse and inside inner circle.
-  Future<String?> _applyCirclingInDart() async {
-    final path = _activeImage.imagePath;
-    final file = File(path);
-    if (!await file.exists()) return null;
-    final bytes = await file.readAsBytes();
+  // FIXED: Moved the logic to a static function for Compute (Background Isolate)
+  // This prevents the application from "stopping responding" during processing.
+  static Future<void> _processImageInIsolate(CirclingParams params) async {
+    final bytes = await File(params.inputPath).readAsBytes();
     img.Image? decoded = img.decodeImage(bytes);
-    if (decoded == null) return null;
+    if (decoded == null) return;
 
-    final w = decoded.width;
-    final h = decoded.height;
-    final vw = _circlingViewSize?.width ?? w.toDouble();
-    final vh = _circlingViewSize?.height ?? h.toDouble();
+    final w = decoded.width.toDouble();
+    final h = decoded.height.toDouble();
+    final vw = params.viewSize.width;
+    final vh = params.viewSize.height;
+
     final scale = (vw / w) < (vh / h) ? (vw / w) : (vh / h);
     final shortestSide = vw < vh ? vw : vh;
 
-    final cxOuter = (w / 2) + (vw * _outerCircleOffset.dx / scale);
-    final cyOuter = (h / 2) + (vh * _outerCircleOffset.dy / scale);
-    final cxInner = (w / 2) + (vw * _innerCircleOffset.dx / scale);
-    final cyInner = (h / 2) + (vh * _innerCircleOffset.dy / scale);
-    final or = _outerRadiusVal * (shortestSide / 2);
-    final ir = _innerRadiusVal * (shortestSide / 2) * _innerShrink;
-    final rx = or / scale;
-    final ry = (or * _ovalRatio) / scale;
-    final rix = ir / scale;
-    final riy = ir / scale;
-    if (rx <= 0 || ry <= 0 || rix <= 0 || riy <= 0) return null;
+    // Map UI coordinates to actual Image pixels
+    final cxOuter = (w / 2) + (vw * params.outerOffset.dx / scale);
+    final cyOuter = (h / 2) + (vh * params.outerOffset.dy / scale);
+    final cxInner = (w / 2) + (vw * params.innerOffset.dx / scale);
+    final cyInner = (h / 2) + (vh * params.innerOffset.dy / scale);
 
-    img.Image out = decoded.convert(numChannels: 4);
-    for (int y = 0; y < out.height; y++) {
-      for (int x = 0; x < out.width; x++) {
-        final u = (x - cxOuter) / rx;
-        final v = (y - cyOuter) / ry;
-        final outsideOuter = (u * u + v * v) > 1.0;
-        final ui = (x - cxInner) / rix;
-        final vi = (y - cyInner) / riy;
-        final insideInner = (ui * ui + vi * vi) < 1.0;
-        if (outsideOuter || insideInner) {
-          out.setPixelRgba(x, y, 0, 0, 0, 0);
+    final rx = (params.outerRadiusVal * (shortestSide / 2)) / scale;
+    final ry =
+        (params.outerRadiusVal * (shortestSide / 2) * params.ovalRatio) / scale;
+    final rix = (params.innerRadiusVal * (shortestSide / 2)) / scale;
+    final riy = (params.innerRadiusVal * (shortestSide / 2)) / scale;
+
+    // CHANGED: Logic to cut specifically according to the BIG circle (Outer Ellipse)
+    // We create a new image that is only as large as the outer bounds to ensure "Center Fitting"
+    int cropLeft = (cxOuter - rx).floor().clamp(0, decoded.width);
+    int cropTop = (cyOuter - ry).floor().clamp(0, decoded.height);
+    int cropWidth = (rx * 2).ceil().clamp(0, decoded.width - cropLeft);
+    int cropHeight = (ry * 2).ceil().clamp(0, decoded.height - cropTop);
+
+    img.Image out = img.Image(
+      width: cropWidth,
+      height: cropHeight,
+      numChannels: 4,
+    );
+
+    // Fill background with transparent
+    out.clear(img.ColorRgba8(0, 0, 0, 0));
+
+    for (int y = 0; y < cropHeight; y++) {
+      for (int x = 0; x < cropWidth; x++) {
+        // Global coordinates in original image
+        double globalX = (cropLeft + x).toDouble();
+        double globalY = (cropTop + y).toDouble();
+
+        // Check Outer Ellipse
+        double uO = (globalX - cxOuter) / rx;
+        double vO = (globalY - cyOuter) / ry;
+        bool isInsideOuter = (uO * uO + vO * vO) <= 1.0;
+
+        // Check Inner Circle
+        double uI = (globalX - cxInner) / rix;
+        double vI = (globalY - cyInner) / riy;
+        bool isInsideInner = (uI * uI + vI * vI) < 1.0;
+
+        if (isInsideOuter && !isInsideInner) {
+          var pixel = decoded.getPixel(cropLeft + x, cropTop + y);
+          out.setPixel(x, y, pixel);
         }
       }
     }
 
     final png = img.encodePng(out);
+    await File(params.outputPath).writeAsBytes(png);
+  }
+
+  // FIXED: Updated to use Compute for non-blocking UI
+  Future<String?> _applyCirclingInDart() async {
+    final path = _activeImage.imagePath;
+    if (!await File(path).exists() || _circlingViewSize == null) return null;
+
     final tempDir = await getTemporaryDirectory();
     final newPath =
         '${tempDir.path}/edited_${DateTime.now().millisecondsSinceEpoch}.png';
-    await File(newPath).writeAsBytes(png);
-    return newPath;
+
+    try {
+      await compute(
+        _processImageInIsolate,
+        CirclingParams(
+          inputPath: path,
+          outputPath: newPath,
+          outerRadiusVal: _outerRadiusVal,
+          innerRadiusVal: _innerRadiusVal,
+          ovalRatio: _ovalRatio,
+          outerOffset: _outerCircleOffset,
+          innerOffset: _innerCircleOffset,
+          viewSize: _circlingViewSize!,
+        ),
+      );
+      return newPath;
+    } catch (e) {
+      debugPrint("Processing Error: $e");
+      return null;
+    }
   }
 
   void _handleEditingResult(String newPath) {
@@ -239,28 +298,24 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
 
   Future<void> _applyCurrentStep() async {
     setState(() => _isProcessing = true);
-
     try {
       if (_currentStep == 0) {
-        debugPrint("🔵 Applying circling (Dart)...");
         final newPath = await _applyCirclingInDart();
         if (newPath != null && mounted) {
           _handleEditingResult(newPath);
         } else {
           setState(() => _isProcessing = false);
-          if (mounted) {
+          if (mounted)
             ToastService.showError(
               context,
               title: "Error",
               message: "Failed to apply circling",
             );
-          }
         }
         return;
       }
 
       if (_currentStep == 2) {
-        debugPrint("🎨 Applying color adjustment...");
         await PhotopeaService().adjustColor(
           brightness: _brightness,
           contrast: _contrast,
@@ -268,28 +323,11 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
           hue: _hue,
         );
         await Future.delayed(const Duration(milliseconds: 1000));
-        debugPrint("✅ Color adjustment applied, waiting before export...");
       }
 
-      debugPrint("📤 Exporting image...");
       await PhotopeaService().exportImage();
-      debugPrint("⏳ Waiting for export result...");
-
-      Future.delayed(const Duration(seconds: 30), () {
-        if (_isProcessing && mounted) {
-          setState(() => _isProcessing = false);
-        }
-      });
     } catch (e) {
-      debugPrint("❌ Apply error: $e");
       setState(() => _isProcessing = false);
-      if (mounted) {
-        ToastService.showError(
-          context,
-          title: "Error",
-          message: "Failed to apply changes",
-        );
-      }
     }
   }
 
@@ -303,14 +341,6 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
       if (mounted) _handleEditingResult(newPath);
     } catch (e) {
       setState(() => _isProcessing = false);
-      debugPrint("Export Error: $e");
-      if (mounted) {
-        ToastService.showError(
-          context,
-          title: "Error",
-          message: "Failed to process image",
-        );
-      }
     }
   }
 
@@ -399,7 +429,6 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
   void _resetSelection() {
     setState(() {
       _resetTools();
-      // Restore active image to raw/original
       final rawPath = _activeImage.originalPath;
       _projectImages[_selectedImageIndex] = _activeImage.copyWith(
         imagePath: rawPath,
@@ -408,11 +437,6 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
         isColorDone: false,
       );
     });
-    ToastService.showSuccess(
-      context,
-      title: "Reset",
-      message: "Raw image restored; tools reset.",
-    );
   }
 
   @override
@@ -428,7 +452,6 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
           onArrowPressed: _navigateBack,
           helpDialogNum: '3',
         ),
-        floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
         floatingActionButton: Opacity(
           opacity: _allImagesDone ? 1.0 : 0.5,
           child: SizedBox(
@@ -438,13 +461,7 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
               icon: 'assets/Icons/brush.svg',
               svgColor: Colors.white,
               onPressed: () async {
-                if (!_allImagesDone) {
-                  ToastService.showError(
-                    context,
-                    title: "Pending",
-                    message: "Finish all images first.",
-                  );
-                } else {
+                if (_allImagesDone) {
                   final paths = _projectImages.map((e) => e.imagePath).toList();
                   await HiveService.updateSessionGeneratedArt(
                     _session.id,
@@ -459,90 +476,27 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
             ),
           ),
         ),
-
         body: Stack(
           children: [
-            //!================================================================================================================================================================
             Positioned.fill(
               child: InAppWebView(
                 initialUrlRequest: URLRequest(url: WebUri(photopeaUrl)),
                 initialSettings: InAppWebViewSettings(
-                  mediaPlaybackRequiresUserGesture: false,
                   javaScriptEnabled: true,
                   domStorageEnabled: true,
-                  isInspectable: kDebugMode,
-                  allowFileAccessFromFileURLs: true,
-                  allowUniversalAccessFromFileURLs: true,
                 ),
-                onWebViewCreated: (c) {
-                  PhotopeaService().setController(c);
-                },
+                onWebViewCreated: (c) => PhotopeaService().setController(c),
                 onConsoleMessage: (c, msg) {
                   final message = msg.message;
-
-                  // ✅ Handle export result FIRST (before filtering)
                   if (message.startsWith("FLUTTER_IMAGE_DATA:")) {
                     final base64Data = message.substring(
                       "FLUTTER_IMAGE_DATA:".length,
                     );
-                    debugPrint(
-                      "🎉 Received image data: ${base64Data.length} chars",
-                    );
                     PhotopeaService().onSaveResult?.call(base64Data);
-                    return; // Don't print the huge base64 string
                   }
-
-                  // Log ALL Photopea-related messages for debugging
-                  if (message.startsWith("FLUTTER_") ||
-                      message.startsWith("PHOTOPEA_") ||
-                      message.contains("FLUTTER_EXPORT_LISTENER_READY") ||
-                      message.contains("PHOTOPEA_SCRIPT") ||
-                      message.contains("PHOTOPEA_ERROR") ||
-                      message.contains("PHOTOPEA_EXPORT")) {
-                    debugPrint("📱 Photopea Console: $message");
-                  }
-
-                  // ✅ Detect when Photopea is ready
-                  if (message.contains("PBJS Que Loaded!") ||
-                      message.contains("adding")) {
-                    Future.delayed(const Duration(seconds: 2), () {
-                      if (!PhotopeaService().isReady) {
-                        debugPrint("✅ Photopea detected as ready via console");
-                        PhotopeaService().setReady();
-
-                        if (_projectImages.isNotEmpty) {
-                          PhotopeaService().loadImage(
-                            _projectImages[0].imagePath,
-                          );
-                        }
-                      }
-                    });
-                  }
-
-                  // ✅ Debug Photopea events
-                  if (msg.message.contains("PHOTOPEA_")) {
-                    debugPrint("🎨 ${msg.message}");
-                  }
-
-                  // ✅ Confirm export listener is ready
-                  if (msg.message.contains("FLUTTER_EXPORT_LISTENER_READY")) {
-                    debugPrint("✅ Export listener is active");
-                  }
-                },
-                onLoadStop: (controller, url) async {
-                  debugPrint("🌐 Photopea page loaded: $url");
-                },
-                onLoadError: (controller, url, code, message) {
-                  debugPrint("❌ Photopea load error: $message");
                 },
               ),
             ),
-
-            //!===============================================================================================================================================
-
-            // ------------------------------------------------
-            // 2. UI OVERLAY (Opaque)
-            // ------------------------------------------------
             Positioned.fill(
               child: Container(
                 color: const Color(0xFF12151B),
@@ -550,7 +504,6 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
                   children: [
                     Expanded(
                       child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Expanded(
                             flex: 3,
@@ -558,35 +511,23 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
                               children: [
                                 _buildStepHeader(),
                                 Expanded(
-                                  child:
-                                      // _activeImage.isCirclingDone &&
-                                      //     _activeImage.imagePath !=
-                                      //         _activeImage.originalPath
-                                      // ? _buildSplitView()
-                                      // : 
-                                      Container(
-                                          margin: const EdgeInsets.all(16),
-                                          decoration: BoxDecoration(
-                                            color: const Color(0xFF1A1F26),
-                                            borderRadius: BorderRadius.circular(
-                                              16,
-                                            ),
-                                            border: Border.all(
-                                              color: Colors.white10,
-                                            ),
-                                          ),
-                                          child: ClipRRect(
-                                            borderRadius: BorderRadius.circular(
-                                              16,
-                                            ),
-                                            child: _isProcessing
-                                                ? const Center(
-                                                    child:
-                                                        CircularProgressIndicator(),
-                                                  )
-                                                : _buildEditorView(),
-                                          ),
-                                        ),
+                                  child: Container(
+                                    margin: const EdgeInsets.all(16),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFF1A1F26),
+                                      borderRadius: BorderRadius.circular(16),
+                                      border: Border.all(color: Colors.white10),
+                                    ),
+                                    child: ClipRRect(
+                                      borderRadius: BorderRadius.circular(16),
+                                      child: _isProcessing
+                                          ? const Center(
+                                              child:
+                                                  CircularProgressIndicator(),
+                                            )
+                                          : _buildEditorView(),
+                                    ),
+                                  ),
                                 ),
                                 _buildBottomControls(),
                               ],
@@ -606,113 +547,6 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
     );
   }
 
-  // --- VIEWS ---
-
-  Widget _buildSplitView() {
-    return Container(
-      margin: const EdgeInsets.all(16),
-      child: Row(
-        children: [
-          // Editing view (original for step 0, cut image for steps 1-2)
-          Expanded(
-            flex: 1,
-            child: Container(
-              decoration: BoxDecoration(
-                color: const Color(0xFF1A1F26),
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: Colors.white10),
-              ),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(16),
-                child: _isProcessing
-                    ? const Center(child: CircularProgressIndicator())
-                    : _buildEditorViewForSplit(),
-              ),
-            ),
-          ),
-          const SizedBox(width: 16),
-          // Cut image - independent, taking whole space
-          Expanded(
-            flex: 1,
-            child: Container(
-              decoration: BoxDecoration(
-                color: const Color(0xFF1A1F26),
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: Colors.green, width: 2),
-              ),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(16),
-                child: Image.file(
-                  File(_activeImage.imagePath),
-                  fit: BoxFit.cover,
-                  width: double.infinity,
-                  height: double.infinity,
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildEditorViewForSplit() {
-    // For step 0, use original image. For steps 1-2, use cut image
-    final editingImage = _currentStep == 0
-        ? _activeImage.copyWith(imagePath: _activeImage.originalPath)
-        : _activeImage;
-
-    switch (_currentStep) {
-      case 0:
-        return CirclingView(
-          activeImage: editingImage,
-          outerRadius: _outerRadiusVal,
-          innerRadius: _innerRadiusVal,
-          ovalRatio: _ovalRatio,
-          outerCenterOffset: _outerCircleOffset,
-          innerCenterOffset: _innerCircleOffset,
-          onOuterPan: (dx, dy) =>
-              setState(() => _outerCircleOffset += Offset(dx, dy)),
-          onInnerPan: (dx, dy) =>
-              setState(() => _innerCircleOffset += Offset(dx, dy)),
-          onOuterRadiusChange: (v) => setState(() => _outerRadiusVal = v),
-          onInnerRadiusChange: (v) => setState(() {
-            _innerRadiusVal = v.clamp(0.0, _outerRadiusVal);
-          }),
-          onOvalRatioChange: (ratio) => setState(() => _ovalRatio = ratio),
-          onLayoutSize: (s) {
-            if (_circlingViewSize == s) return;
-            final size = s;
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (!mounted) return;
-              setState(() => _circlingViewSize = size);
-            });
-          },
-        );
-      case 1:
-        return FlashCorrectionView(
-          activeImage: editingImage,
-          onBrushStroke: (p) => PhotopeaService().correctFlashAtPoints(p, 20.0),
-        );
-      case 2:
-        return ColorAdjustmentView(
-          activeImage: editingImage,
-          brightness: _brightness,
-          contrast: _contrast,
-          saturation: _saturation,
-          hue: _hue,
-          onAdjustmentChanged: (b, c, s, h) => setState(() {
-            _brightness = b;
-            _contrast = c;
-            _saturation = s;
-            _hue = h;
-          }),
-        );
-      default:
-        return const SizedBox();
-    }
-  }
-
   Widget _buildEditorView() {
     switch (_currentStep) {
       case 0:
@@ -728,18 +562,10 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
           onInnerPan: (dx, dy) =>
               setState(() => _innerCircleOffset += Offset(dx, dy)),
           onOuterRadiusChange: (v) => setState(() => _outerRadiusVal = v),
-          onInnerRadiusChange: (v) => setState(() {
-            _innerRadiusVal = v.clamp(0.0, _outerRadiusVal);
-          }),
+          onInnerRadiusChange: (v) =>
+              setState(() => _innerRadiusVal = v.clamp(0.0, _outerRadiusVal)),
           onOvalRatioChange: (ratio) => setState(() => _ovalRatio = ratio),
-          onLayoutSize: (s) {
-            if (_circlingViewSize == s) return;
-            final size = s;
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (!mounted) return;
-              setState(() => _circlingViewSize = size);
-            });
-          },
+          onLayoutSize: (s) => _circlingViewSize = s,
         );
       case 1:
         return FlashCorrectionView(
@@ -764,8 +590,6 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
         return const SizedBox();
     }
   }
-
-  // --- UI COMPONENTS ---
 
   Container _buildQueue(BuildContext context) {
     return Container(
@@ -813,35 +637,23 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
                           color: Colors.white.withOpacity(0.02),
                           borderRadius: BorderRadius.circular(12),
                         ),
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Container(
-                              width: 48,
-                              height: 48,
-                              decoration: const BoxDecoration(
-                                color: Color(0xFF2A3441),
-                                shape: BoxShape.circle,
-                              ),
-                              padding: const EdgeInsets.all(12),
-                              child: const Icon(
-                                Icons.cloud_upload_outlined,
-                                color: Color(0xFF94A3B8),
-                              ),
-                            ),
-                          ],
+                        child: const Center(
+                          child: Icon(
+                            Icons.cloud_upload_outlined,
+                            color: Color(0xFF94A3B8),
+                          ),
                         ),
                       ),
                     ),
                   );
                 }
                 final img = _projectImages[index];
-                final isSelected = index == _selectedImageIndex;
-                final isDone = img.isFullyEdited;
-                return _QueueImageItem(
+                return QueueImageItem(
+                  // FIXED: Ensure this matches the public class name
+                  // Added key for better list performance
                   img: img,
-                  isSelected: isSelected,
-                  isDone: isDone,
+                  isSelected: index == _selectedImageIndex,
+                  isDone: img.isFullyEdited,
                   onTap: () => _switchImage(index),
                   onRemove: () => _removeImageFromQueue(index),
                 );
@@ -880,49 +692,35 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
     final bool isDone = index == 0
         ? _activeImage.isCirclingDone
         : index == 1
-            ? _activeImage.isFlashDone
-            : _activeImage.isColorDone;
+        ? _activeImage.isFlashDone
+        : _activeImage.isColorDone;
     final bool isLocked = index == 1
         ? !_activeImage.isCirclingDone
         : index == 2
-            ? !_activeImage.isFlashDone
-            : false;
-    final bool isAccessible = !isLocked;
-
+        ? !_activeImage.isFlashDone
+        : false;
     final Color color = isActive
         ? Colors.blueAccent
         : isDone
-            ? Colors.green
-            : isLocked
-                ? Colors.white12
-                : Colors.grey;
-
-    final Widget iconWidget = isLocked
-        ? Icon(
-            Icons.lock,
-            color: color,
-            size: isActive ? 20 : 15,
-          )
-        : SvgPicture.asset(
-            iconpath,
-            colorFilter: ColorFilter.mode(color, BlendMode.srcIn),
-            width: isActive ? 20 : 15,
-            height: isActive ? 20 : 15,
-          );
-
-    final Color barColor = isActive
-        ? Colors.blueAccent
-        : isDone
-            ? Colors.green
-            : Colors.transparent;
+        ? Colors.green
+        : isLocked
+        ? Colors.white12
+        : Colors.grey;
 
     return InkWell(
-      onTap: isAccessible ? () => setState(() => _currentStep = index) : null,
+      onTap: !isLocked ? () => setState(() => _currentStep = index) : null,
       child: Column(
         children: [
           Row(
             children: [
-              iconWidget,
+              isLocked
+                  ? Icon(Icons.lock, color: color, size: 15)
+                  : SvgPicture.asset(
+                      iconpath,
+                      colorFilter: ColorFilter.mode(color, BlendMode.srcIn),
+                      width: 15,
+                      height: 15,
+                    ),
               const Gap(8),
               Text(
                 title,
@@ -937,7 +735,11 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
           Container(
             height: 2,
             width: 200,
-            color: barColor,
+            color: isActive
+                ? Colors.blueAccent
+                : isDone
+                ? Colors.green
+                : Colors.transparent,
           ),
         ],
       ),
@@ -980,6 +782,13 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
                 label: "Shape",
                 value: (_ovalRatio - 0.5),
                 overrideDisplay: _ovalRatio == 1.0 ? "Circle" : "Oval",
+                showReset: true, // Only show for this slider
+                onReset: () {
+                  setState(() {
+                    _ovalRatio =
+                        1.0; // Sets the slider back to the "Circle" position
+                  });
+                },
                 onChanged: (val) => setState(() => _ovalRatio = 0.5 + val),
               ),
             ),
@@ -1046,6 +855,8 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
     required double value,
     required Function(double) onChanged,
     String? overrideDisplay,
+    bool showReset = false, // Control visibility
+    VoidCallback? onReset,
   }) {
     return Container(
       padding: const EdgeInsets.all(12),
@@ -1063,145 +874,37 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
                 label,
                 style: const TextStyle(color: Colors.white, fontSize: 12),
               ),
-              Text(
-                overrideDisplay ?? "${(value * 100).toInt()}%",
-                style: const TextStyle(color: Colors.blueAccent, fontSize: 12),
+              Row(
+                children: [
+                  Text(
+                    overrideDisplay ?? "${(value * 100).toInt()}%",
+                    style: const TextStyle(
+                      color: Colors.blueAccent,
+                      fontSize: 12,
+                    ),
+                  ),
+
+                  if (showReset) ...[
+                    const SizedBox(width: 8),
+                    GestureDetector(
+                      onTap: onReset,
+                      child: const Icon(
+                        Icons.refresh,
+                        color: Colors.white54,
+                        size: 18,
+                      ),
+                    ),
+                  ],
+                ],
               ),
             ],
           ),
-          SliderTheme(
-            data: SliderTheme.of(context).copyWith(
-              trackHeight: 4,
-              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
-            ),
-            child: Slider(
-              value: value.clamp(0.0, 1.0),
-              onChanged: onChanged,
-              activeColor: Colors.blueAccent,
-            ),
+          Slider(
+            value: value.clamp(0.0, 1.0),
+            onChanged: onChanged,
+            activeColor: Colors.blueAccent,
           ),
         ],
-      ),
-    );
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Queue image item: hover to show trash, tap to select, trash to remove
-// ---------------------------------------------------------------------------
-class _QueueImageItem extends StatefulWidget {
-  final IrisImage img;
-  final bool isSelected;
-  final bool isDone;
-  final VoidCallback onTap;
-  final VoidCallback onRemove;
-
-  const _QueueImageItem({
-    required this.img,
-    required this.isSelected,
-    required this.isDone,
-    required this.onTap,
-    required this.onRemove,
-  });
-
-  @override
-  State<_QueueImageItem> createState() => _QueueImageItemState();
-}
-
-class _QueueImageItemState extends State<_QueueImageItem> {
-  bool _isHovered = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final borderColor = widget.isSelected
-        ? Colors.blueAccent
-        : (widget.isDone ? Colors.green : Colors.transparent);
-    final badgeColor = widget.isSelected
-        ? Colors.blueAccent
-        : (widget.isDone ? Colors.green : Colors.grey.withOpacity(0.8));
-    final badgeText = widget.isSelected
-        ? "EDITING"
-        : (widget.isDone ? "DONE" : "PENDING");
-
-    return MouseRegion(
-      onEnter: (_) => setState(() => _isHovered = true),
-      onExit: (_) => setState(() => _isHovered = false),
-      child: GestureDetector(
-        onTap: widget.onTap,
-        child: Container(
-          height: 200,
-          decoration: BoxDecoration(
-            border: Border.all(
-              color: borderColor,
-              width: (widget.isSelected || widget.isDone) ? 2 : 0,
-            ),
-            borderRadius: BorderRadius.circular(8),
-            color: const Color(0xFF2A3441),
-          ),
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              ClipRRect(
-                borderRadius: BorderRadius.circular(6),
-                child: ColorFiltered(
-                  colorFilter: (!widget.isSelected && !widget.isDone)
-                      ? const ColorFilter.mode(Colors.black54, BlendMode.darken)
-                      : const ColorFilter.mode(
-                          Colors.transparent,
-                          BlendMode.dst,
-                        ),
-                  child: Image.file(
-                    File(widget.img.imagePath),
-                    fit: BoxFit.cover,
-                  ),
-                ),
-              ),
-              Positioned(
-                top: 8,
-                right: 8,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 6,
-                    vertical: 2,
-                  ),
-                  decoration: BoxDecoration(
-                    color: badgeColor,
-                    borderRadius: BorderRadius.circular(4),
-                  ),
-                  child: Text(
-                    badgeText,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 8,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ),
-              ),
-              if (_isHovered)
-                Positioned(
-                  top: 8,
-                  left: 8,
-                  child: GestureDetector(
-                    onTap: () => widget.onRemove(),
-                    behavior: HitTestBehavior.opaque,
-                    child: Container(
-                      padding: const EdgeInsets.all(6),
-                      decoration: BoxDecoration(
-                        color: Colors.black54,
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                      child: const Icon(
-                        Icons.delete_outline,
-                        color: Colors.redAccent,
-                        size: 20,
-                      ),
-                    ),
-                  ),
-                ),
-            ],
-          ),
-        ),
       ),
     );
   }

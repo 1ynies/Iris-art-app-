@@ -43,11 +43,7 @@ class _CirclingViewState extends State<CirclingView> {
   Offset? _resizeStartPos;
   Offset? _resizeStartCenter;
   double? _resizeStartRadius;
-  static const double _edgeHitMargin = 14.0;
-  static const double _minRadiusVal = 0.05;
-  static const double _maxRadiusVal = 1.0;
-  static const double _minOvalRatio = 0.3;
-  static const double _maxOvalRatio = 2.0;
+  static const double _edgeHitMargin = 20.0; // Increased for better touch
 
   double _shortestSide(double vw, double vh) => vw < vh ? vw : vh;
 
@@ -61,65 +57,23 @@ class _CirclingViewState extends State<CirclingView> {
     (vh / 2) + (vh * widget.innerCenterOffset.dy),
   );
 
-  double _outerR(double vw, double vh) =>
-      widget.outerRadius * (_shortestSide(vw, vh) / 2);
-
-  double _innerR(double vw, double vh) =>
-      widget.innerRadius * (_shortestSide(vw, vh) / 2);
-
-  double _outerRy(double vw, double vh) => _outerR(vw, vh) * widget.ovalRatio;
-
-  bool _isInsideCircle(Offset c, double r, Offset p) {
-    return (p - c).distance <= r;
-  }
-
-  bool _isNearCircleEdge(Offset c, double r, Offset p) {
-    final d = (p - c).distance;
-    return (d - r).abs() <= _edgeHitMargin;
-  }
-
-  bool _isInsideEllipse(Offset c, double rx, double ry, Offset p) {
-    final u = (p.dx - c.dx) / rx;
-    final v = (p.dy - c.dy) / ry;
-    return u * u + v * v <= 1.0;
-  }
-
-  bool _isNearEllipseEdge(Offset c, double rx, double ry, Offset p) {
-    final u = (p.dx - c.dx) / rx;
-    final v = (p.dy - c.dy) / ry;
-    final f = u * u + v * v;
-    return (f - 1.0).abs() <= 0.15;
-  }
-
-  /// Determines which side of the ellipse is being dragged
-  /// Returns true if horizontal (left/right), false if vertical (top/bottom)
-  bool _isHorizontalDrag(Offset center, double rx, double ry, Offset point) {
-    final dx = (point.dx - center.dx).abs();
-    final dy = (point.dy - center.dy).abs();
-    // Compare normalized distances to determine which side is closer
-    final normalizedDx = dx / rx;
-    final normalizedDy = dy / ry;
-    return normalizedDx > normalizedDy;
-  }
-
   _DragMode _hitTest(double vw, double vh, Offset p) {
     final oc = _outerCenter(vw, vh);
     final ic = _innerCenter(vw, vh);
-    final or = _outerR(vw, vh);
-    final ory = _outerRy(vw, vh);
-    final ir = _innerR(vw, vh);
+    final or = widget.outerRadius * (_shortestSide(vw, vh) / 2);
+    final ir = widget.innerRadius * (_shortestSide(vw, vh) / 2);
 
-    if (_isNearEllipseEdge(oc, or, ory, p)) return _DragMode.resizeOuter;
-    if (_isNearCircleEdge(ic, ir, p)) return _DragMode.resizeInner;
-    if (_isInsideCircle(ic, ir, p)) return _DragMode.moveInner;
-    if (_isInsideEllipse(oc, or, ory, p)) return _DragMode.moveOuter;
+    if ((p - ic).distance < _edgeHitMargin + ir && (p - ic).distance > ir - _edgeHitMargin) return _DragMode.resizeInner;
+    if ((p - ic).distance < ir) return _DragMode.moveInner;
+    
+    // Simple ellipse hit test for resize/move
+    final u = (p.dx - oc.dx) / or;
+    final v = (p.dy - oc.dy) / (or * widget.ovalRatio);
+    final dist = u * u + v * v;
+    if ((dist - 1.0).abs() < 0.2) return _DragMode.resizeOuter;
+    if (dist < 1.0) return _DragMode.moveOuter;
+
     return _DragMode.none;
-  }
-
-  double _radiusValFromDistance(double dist, double vw, double vh) {
-    final half = _shortestSide(vw, vh) / 2;
-    if (half <= 0) return widget.outerRadius;
-    return (dist / half).clamp(_minRadiusVal, _maxRadiusVal);
   }
 
   @override
@@ -147,85 +101,38 @@ class _CirclingViewState extends State<CirclingView> {
           },
           onPanUpdate: (d) {
             final pos = d.localPosition;
-            final delta = d.delta;
             if (_mode == _DragMode.moveOuter) {
-              widget.onOuterPan(delta.dx / vw, delta.dy / vh);
+              widget.onOuterPan(d.delta.dx / vw, d.delta.dy / vh);
             } else if (_mode == _DragMode.moveInner) {
-              widget.onInnerPan(delta.dx / vw, delta.dy / vh);
-            } else if (_mode == _DragMode.resizeOuter) {
-              if (_resizeStartPos != null && _resizeStartCenter != null) {
-                final or = _outerR(vw, vh);
-                final ory = _outerRy(vw, vh);
-                // Determine which side is being dragged based on initial position
-                final isHorizontal = _isHorizontalDrag(
-                  _resizeStartCenter!,
-                  or,
-                  ory,
-                  _resizeStartPos!,
-                );
-                
-                if (isHorizontal) {
-                  // Adjust width (base radius) - use horizontal distance
-                  final dx = (pos.dx - _resizeStartCenter!.dx).abs();
-                  final shortestSide = _shortestSide(vw, vh);
-                  final half = shortestSide / 2;
-                  if (half > 0) {
-                    final newRadius = (dx / half).clamp(_minRadiusVal, _maxRadiusVal);
-                    widget.onOuterRadiusChange(newRadius);
-                  }
-                } else {
-                  // Adjust height (ovalRatio) - use vertical distance
-                  final dy = (pos.dy - _resizeStartCenter!.dy).abs();
-                  final shortestSide = _shortestSide(vw, vh);
-                  final half = shortestSide / 2;
-                  if (half > 0 && _resizeStartRadius != null) {
-                    final baseRadius = _resizeStartRadius! * half;
-                    if (baseRadius > 0) {
-                      final newOvalRatio = (dy / baseRadius).clamp(_minOvalRatio, _maxOvalRatio);
-                      widget.onOvalRatioChange(newOvalRatio);
-                    }
-                  }
-                }
-              }
+              widget.onInnerPan(d.delta.dx / vw, d.delta.dy / vh);
             } else if (_mode == _DragMode.resizeInner) {
               final r = (pos - innerCenter).distance;
-              final val = _radiusValFromDistance(r, vw, vh);
-              widget.onInnerRadiusChange(val);
+              widget.onInnerRadiusChange(r / (shortestSide / 2));
+            } else if (_mode == _DragMode.resizeOuter && _resizeStartCenter != null) {
+              final dx = (pos.dx - _resizeStartCenter!.dx).abs();
+              final dy = (pos.dy - _resizeStartCenter!.dy).abs();
+              // Logic to handle oval or circle resizing based on drag direction
+              if (dx > dy) {
+                widget.onOuterRadiusChange(dx / (shortestSide / 2));
+              } else {
+                widget.onOvalRatioChange(dy / (widget.outerRadius * shortestSide / 2));
+              }
             }
           },
-          onPanEnd: (_) {
-            _mode = _DragMode.none;
-            _resizeStartPos = null;
-            _resizeStartCenter = null;
-            _resizeStartRadius = null;
-          },
-          onPanCancel: () {
-            _mode = _DragMode.none;
-            _resizeStartPos = null;
-            _resizeStartCenter = null;
-            _resizeStartRadius = null;
-          },
+          onPanEnd: (_) => _mode = _DragMode.none,
           behavior: HitTestBehavior.opaque,
           child: Stack(
-            alignment: Alignment.center,
             children: [
-              Image.file(
-                File(widget.activeImage.imagePath),
-                fit: widget.activeImage.isCirclingDone || widget.activeImage.imagePath.contains('edited_')
-                    ? BoxFit.cover
-                    : BoxFit.contain,
-                width: double.infinity,
-                height: double.infinity,
+              Positioned.fill(
+                child: Image.file(
+                  File(widget.activeImage.imagePath),
+                  // FIXED: When it's already cut, use BoxFit.contain so it fills nicely
+                  fit: widget.activeImage.isCirclingDone ? BoxFit.contain : BoxFit.contain,
+                ),
               ),
               CustomPaint(
                 size: Size.infinite,
-                painter: _OverlayPainter(
-                  outerCenter,
-                  innerCenter,
-                  or,
-                  ir,
-                  widget.ovalRatio,
-                ),
+                painter: _OverlayPainter(outerCenter, innerCenter, or, ir, widget.ovalRatio),
               ),
             ],
           ),
@@ -242,33 +149,17 @@ class _OverlayPainter extends CustomPainter {
   final double ir;
   final double ratio;
 
-  _OverlayPainter(
-    this.outerCenter,
-    this.innerCenter,
-    this.or,
-    this.ir,
-    this.ratio,
-  );
+  _OverlayPainter(this.outerCenter, this.innerCenter, this.or, this.ir, this.ratio);
 
   @override
   void paint(Canvas canvas, Size size) {
-    final stroke = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2;
-    stroke.color = Colors.blue;
-    canvas.drawOval(
-      Rect.fromCenter(
-        center: outerCenter,
-        width: or * 2,
-        height: or * 2 * ratio,
-      ),
-      stroke,
-    );
-    stroke.color = Colors.red;
-    canvas.drawOval(
-      Rect.fromCenter(center: innerCenter, width: ir * 2, height: ir * 2),
-      stroke,
-    );
+    final stroke = Paint()..style = PaintingStyle.stroke..strokeWidth = 2;
+    // Outer Circle (Blue)
+    stroke.color = Colors.blueAccent;
+    canvas.drawOval(Rect.fromCenter(center: outerCenter, width: or * 2, height: or * 2 * ratio), stroke);
+    // Inner Circle (Red)
+    stroke.color = Colors.redAccent;
+    canvas.drawCircle(innerCenter, ir, stroke);
   }
 
   @override
