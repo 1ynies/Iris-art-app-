@@ -1,5 +1,4 @@
 import 'package:desktop_drop/desktop_drop.dart';
-import 'package:cross_file/cross_file.dart';
 import 'package:dotted_border/dotted_border.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
@@ -8,6 +7,7 @@ import 'package:flutter_gap/flutter_gap.dart';
 import 'package:flutter_svg/svg.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:iris_designer/Core/Services/hive_service.dart';
 import 'package:iris_designer/Core/Shared/Widgets/global_submit_button_widget.dart';
 import 'package:iris_designer/Core/Utils/toast_service.dart';
 import 'package:iris_designer/Features/ONBOARDING/Domain/entities/client_session.dart';
@@ -35,16 +35,20 @@ class _ImagePrepViewState extends State<ImagePrepView> {
   }
 
   void _initData() {
-    // 1. Trigger Load (The BLoC will now fetch saved images automatically)
-    context.read<ProjectHubBloc>().add(LoadProjectData(widget.session.id));
-
-    // 2. Only handle "returnedImages" (new edits coming back from the editor)
+    // When coming back from editor: replace raw images with unedited list
     if (widget.returnedImages != null && widget.returnedImages!.isNotEmpty) {
-      for (var path in widget.returnedImages!) {
-        context.read<ProjectHubBloc>().add(
-          UploadImageTriggered(projectId: widget.session.id, imagePath: path),
-        );
-      }
+      HiveService.updateSessionImages(
+        widget.session.id,
+        widget.returnedImages!,
+      ).then((_) {
+        if (mounted) {
+          context.read<ProjectHubBloc>().add(
+            LoadProjectData(widget.session.id),
+          );
+        }
+      });
+    } else {
+      context.read<ProjectHubBloc>().add(LoadProjectData(widget.session.id));
     }
   }
 
@@ -87,7 +91,7 @@ class _ImagePrepViewState extends State<ImagePrepView> {
       if ((currentImages.length + addedCount) >= 6) {
         limitHitDuringUpload = true;
         // Don't break immediately, we might want to count how many were ignored
-        continue; 
+        continue;
       }
 
       // Check Duplicates
@@ -110,7 +114,7 @@ class _ImagePrepViewState extends State<ImagePrepView> {
       // Success Message
       String msg = "$addedCount images added.";
       if (limitHitDuringUpload) msg += " (Stopped at limit).";
-      
+
       ToastService.showSuccess(
         context,
         title: "Upload Successful",
@@ -137,13 +141,13 @@ class _ImagePrepViewState extends State<ImagePrepView> {
         title: "Invalid Format",
         message: "Only JPG and PNG files are allowed.",
       );
-    } 
-    
+    }
+
     // Mixed Warnings (if needed)
     if (addedCount > 0 && (duplicateCount > 0 || invalidFormatCount > 0)) {
-      // If we added some, but skipped others, maybe show a small warning toast *after* success? 
-      // Or just rely on the user seeing only some files appeared. 
-      // For professional apps, usually just showing the success count is cleaner, 
+      // If we added some, but skipped others, maybe show a small warning toast *after* success?
+      // Or just rely on the user seeing only some files appeared.
+      // For professional apps, usually just showing the success count is cleaner,
       // unless ALL failed.
     }
   }
@@ -152,8 +156,12 @@ class _ImagePrepViewState extends State<ImagePrepView> {
     // Basic check before opening picker
     final state = context.read<ProjectHubBloc>().state;
     if (state is ProjectHubLoaded && state.project.imageUrls.length >= 6) {
-       ToastService.showError(context, title: "Limit Reached", message: "Max 6 images allowed.");
-       return;
+      ToastService.showError(
+        context,
+        title: "Limit Reached",
+        message: "Max 6 images allowed.",
+      );
+      return;
     }
 
     FilePickerResult? result = await FilePicker.platform.pickFiles(
@@ -163,7 +171,10 @@ class _ImagePrepViewState extends State<ImagePrepView> {
     );
 
     if (result != null && context.mounted) {
-      final paths = result.files.map((e) => e.path).whereType<String>().toList();
+      final paths = result.files
+          .map((e) => e.path)
+          .whereType<String>()
+          .toList();
       _processFilePaths(context, paths);
     }
   }
@@ -184,60 +195,63 @@ class _ImagePrepViewState extends State<ImagePrepView> {
         // ✅ Add a visual overlay for the whole screen when dragging
         body: Stack(
           children: [
-            SingleChildScrollView(
-              child: Padding(
-                padding: const EdgeInsets.all(32.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+            BlocBuilder<ProjectHubBloc, ProjectHubState>(
+              builder: (context, state) {
+                bool hasImages = false;
+                List<String> images = [];
+                if (state is ProjectHubLoaded) {
+                  images = state.project.imageUrls;
+                  hasImages = images.isNotEmpty;
+                }
+
+                return Column(
                   children: [
-                    // --- Header Section ---
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: const [
-                        Column(
+                    // Scrollable header section
+                    SingleChildScrollView(
+                      child: Padding(
+                        padding: const EdgeInsets.all(32.0),
+                        child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(
-                              'Image Prep',
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontSize: 30,
-                                fontWeight: FontWeight.bold,
-                              ),
+                            // --- Header Section ---
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: const [
+                                Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      'Image Prep',
+                                      style: TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 30,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                    SizedBox(height: 8),
+                                    Text(
+                                      'Upload assets',
+                                      style: TextStyle(
+                                        color: Colors.grey,
+                                        fontSize: 16,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                StatusChip(label: 'ACTIVE SESSION'),
+                              ],
                             ),
-                            SizedBox(height: 8),
-                            Text(
-                              'Upload assets',
-                              style: TextStyle(color: Colors.grey, fontSize: 16),
+                            const Gap(20),
+
+                            // --- Client Info Card ---
+                            ClientInfoCard(
+                              name: widget.session.clientName,
+                              email: widget.session.email,
+                              location: widget.session.country,
                             ),
-                          ],
-                        ),
-                        StatusChip(label: 'ACTIVE SESSION'),
-                      ],
-                    ),
-                    const Gap(20),
-      
-                    // --- Client Info Card ---
-                    ClientInfoCard(
-                      name: widget.session.clientName,
-                      email: widget.session.email,
-                      location: widget.session.country,
-                    ),
-                    const SizedBox(height: 20),
-      
-                    // --- Main Content Area ---
-                    BlocBuilder<ProjectHubBloc, ProjectHubState>(
-                      builder: (context, state) {
-                        bool hasImages = false;
-                        List<String> images = [];
-                        if (state is ProjectHubLoaded) {
-                          images = state.project.imageUrls;
-                          hasImages = images.isNotEmpty;
-                        }
-      
-                        return Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
+                            const SizedBox(height: 16),
+
+                            // --- Main Content Area Header ---
                             Row(
                               mainAxisAlignment: MainAxisAlignment.spaceBetween,
                               children: [
@@ -271,35 +285,57 @@ class _ImagePrepViewState extends State<ImagePrepView> {
                                       backgroundColor: const Color(0xFF242C38),
                                       foregroundColor: Colors.white,
                                       elevation: 0,
-                                      side: const BorderSide(color: Colors.white12),
+                                      side: const BorderSide(
+                                        color: Colors.white12,
+                                      ),
                                     ),
                                   ),
                               ],
                             ),
-                            const SizedBox(height: 24),
-      
-                            // --- Upload Zone / Grid ---
-                            if (!hasImages)
-                              InkWell(
+                            // const SizedBox(height: 24),
+                          ],
+                        ),
+                      ),
+                    ),
+
+                    // --- Upload Zone / Grid (Expands to fill available space) ---
+                    Expanded(
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 32.0),
+                        child: hasImages
+                            ? SingleChildScrollView(
+                                child: ImageGrid(
+                                  images: images,
+                                  onDelete: (pathToDelete) {
+                                    context.read<ProjectHubBloc>().add(
+                                      RemoveImageTriggered(
+                                        imagePath: pathToDelete,
+                                      ),
+                                    );
+                                  },
+                                ),
+                              )
+                            : InkWell(
                                 onTap: () => _pickImage(context),
                                 child: DottedBorder(
                                   // Highlight border if dragging over
-                                  color: _isDragging 
-                                      ? Colors.blueAccent 
+                                  color: _isDragging
+                                      ? Colors.blueAccent
                                       : const Color(0xFF687890),
                                   strokeWidth: _isDragging ? 3 : 2,
                                   dashPattern: const [8, 4],
                                   borderType: BorderType.RRect,
                                   radius: const Radius.circular(12),
                                   child: Container(
-                                    height: 250,
                                     width: double.infinity,
+                                    height: double.infinity,
                                     // Make sure container has a color to catch hits
-                                    color: _isDragging 
-                                        ? Colors.blue.withOpacity(0.1) 
-                                        : Colors.transparent, 
+                                    color: _isDragging
+                                        ? Colors.blue.withOpacity(0.1)
+                                        : Colors.transparent,
                                     child: Row(
-                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.center,
                                       children: [
                                         Container(
                                           width: 48,
@@ -312,23 +348,23 @@ class _ImagePrepViewState extends State<ImagePrepView> {
                                           child: SvgPicture.asset(
                                             "assets/Icons/arrow_up_tray.svg",
                                             colorFilter: ColorFilter.mode(
-                                              _isDragging 
-                                                ? Colors.blueAccent 
-                                                : const Color(0xFF94A3B8),
+                                              _isDragging
+                                                  ? Colors.blueAccent
+                                                  : const Color(0xFF94A3B8),
                                               BlendMode.srcIn,
                                             ),
                                           ),
                                         ),
                                         const Gap(8),
                                         Text(
-                                          _isDragging 
-                                            ? 'Release to upload' 
-                                            : 'Click or Drag to upload images',
+                                          _isDragging
+                                              ? 'Release to upload'
+                                              : 'Click or Drag to upload images',
                                           style: GoogleFonts.poppins(
                                             textStyle: TextStyle(
                                               fontSize: 15,
-                                              color: _isDragging 
-                                                  ? Colors.blueAccent 
+                                              color: _isDragging
+                                                  ? Colors.blueAccent
                                                   : Colors.white,
                                             ),
                                           ),
@@ -338,95 +374,98 @@ class _ImagePrepViewState extends State<ImagePrepView> {
                                   ),
                                 ),
                               ),
-      
-                            if (hasImages)
-                              ImageGrid(
-                                images: images,
-                                onDelete: (pathToDelete) {
-                                  context.read<ProjectHubBloc>().add(
-                                    RemoveImageTriggered(imagePath: pathToDelete),
-                                  );
-                                },
-                              ),
-                          ],
-                        );
-                      },
+                      ),
                     ),
-      
-                    const SizedBox(height: 16),
-      
-                    // --- Bottom Info ---
-                    BlocBuilder<ProjectHubBloc, ProjectHubState>(
-                      builder: (context, state) {
-                        int count = (state is ProjectHubLoaded) ? state.project.imageUrls.length : 0;
-                        return Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            Text(
-                              '$count images uploaded',
-                              style: const TextStyle(color: Colors.grey, fontSize: 12),
-                            ),
-                            const Text(
-                              'Max 6',
-                              style: TextStyle(color: Colors.grey, fontSize: 12),
-                            ),
-                          ],
-                        );
-                      },
-                    ),
-                    const SizedBox(height: 24),
-      
-                    // --- Continue Button ---
-                    BlocBuilder<ProjectHubBloc, ProjectHubState>(
-                      builder: (context, state) {
-                        bool hasImages = false;
-                        List<String> currentPaths = [];
-                        if (state is ProjectHubLoaded) {
-                          currentPaths = state.project.imageUrls;
-                          hasImages = currentPaths.isNotEmpty;
-                        }
-                        return Row(
-                          children: [
-                            Expanded(
-                              child: Opacity(
-                                opacity: hasImages ? 1.0 : 0.5,
-                                child: GlobalSubmitButtonWidget(
-                                  icon: 'assets/Icons/chevron.svg',
-                                  svgColor: Colors.white,
-                                  title: 'Continue',
-                                  onPressed: !hasImages
-                                      ? () {
-                                          ToastService.showError(
-                                            context,
-                                            title: "No Images",
-                                            message: "Upload an image first.",
-                                          );
-                                        }
-                                      : () async {
-                                          final result = await context.pushNamed(
-                                            'iris-editor',
-                                            extra: {
-                                              'session': widget.session,
-                                              'imageUrls': currentPaths,
-                                            },
-                                          );
-                                          if (result is Map<String, dynamic> &&
-                                              result.containsKey('returnedImages')) {
-                                            // Handle return logic if needed
-                                          }
-                                        },
+                    const SizedBox(height: 10),
+                    // --- Bottom Info (sticky over button) ---
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 32.0),
+                      child: BlocBuilder<ProjectHubBloc, ProjectHubState>(
+                        builder: (context, state) {
+                          int count = (state is ProjectHubLoaded)
+                              ? state.project.imageUrls.length
+                              : 0;
+                          return Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Text(
+                                '$count images uploaded',
+                                style: const TextStyle(
+                                  color: Colors.grey,
+                                  fontSize: 12,
                                 ),
                               ),
-                            ),
-                          ],
-                        );
-                      },
+                              const Text(
+                                'Max 6',
+                                style: TextStyle(
+                                  color: Colors.grey,
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ],
+                          );
+                        },
+                      ),
+                    ),
+                    
+                    // --- Continue Button (Sticky to Bottom) ---
+                    Padding(
+                      padding: const EdgeInsets.only(bottom:32.0, right :32.0 ,left:32.0 ,top :20),
+                      child: BlocBuilder<ProjectHubBloc, ProjectHubState>(
+                        builder: (context, state) {
+                          bool hasImages = false;
+                          List<String> currentPaths = [];
+                          if (state is ProjectHubLoaded) {
+                            currentPaths = state.project.imageUrls;
+                            hasImages = currentPaths.isNotEmpty;
+                          }
+                          return Row(
+                            children: [
+                              Expanded(
+                                child: Opacity(
+                                  opacity: hasImages ? 1.0 : 0.5,
+                                  child: GlobalSubmitButtonWidget(
+                                    icon: 'assets/Icons/chevron.svg',
+                                    svgColor: Colors.white,
+                                    title: 'Continue',
+                                    onPressed: !hasImages
+                                        ? () {
+                                            ToastService.showError(
+                                              context,
+                                              title: "No Images",
+                                              message: "Upload an image first.",
+                                            );
+                                          }
+                                        : () async {
+                                            final result = await context
+                                                .pushNamed(
+                                                  'iris-editor',
+                                                  extra: {
+                                                    'session': widget.session,
+                                                    'imageUrls': currentPaths,
+                                                  },
+                                                );
+                                            if (result
+                                                    is Map<String, dynamic> &&
+                                                result.containsKey(
+                                                  'returnedImages',
+                                                )) {
+                                              // Handle return logic if needed
+                                            }
+                                          },
+                                  ),
+                                ),
+                              ),
+                            ],
+                          );
+                        },
+                      ),
                     ),
                   ],
-                ),
-              ),
+                );
+              },
             ),
-            
+
             // ✅ Global Drag Overlay (Optional but Pro UX)
             // This shows a dark tint over the WHOLE screen when dragging files over it
             if (_isDragging)
@@ -437,14 +476,18 @@ class _ImagePrepViewState extends State<ImagePrepView> {
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        const Icon(Icons.copy_all, color: Colors.white, size: 60),
+                        const Icon(
+                          Icons.copy_all,
+                          color: Colors.white,
+                          size: 60,
+                        ),
                         const SizedBox(height: 16),
                         Text(
                           "Drop images here",
                           style: GoogleFonts.poppins(
-                            fontSize: 24, 
-                            fontWeight: FontWeight.bold, 
-                            color: Colors.white
+                            fontSize: 24,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
                           ),
                         ),
                       ],

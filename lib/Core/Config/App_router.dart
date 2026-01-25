@@ -127,17 +127,13 @@ class AppRouter {
         path: '/editor',
         name: 'iris-editor',
         builder: (context, state) {
+          // 1. Get the Extra Map
           final extras = state.extra as Map<String, dynamic>;
           
-          return BlocProvider(
-            create: (context) => EditorBloc(
-              saveProgressUseCase: SaveImageProgressUseCase(),
-            )..add(LoadEditorSession(extras['imageUrls'])),
-            
-            child: IrisEditingScreen(
-              imageUrls: extras['imageUrls'],
-              session: extras['session'],
-            ),
+          // 2. Return Screen directly (BlocProvider is now INSIDE the screen)
+          // 3. Pass 'extra' correctly as you requested
+          return IrisEditingScreen(
+            extra: extras, 
           );
         },
       ),

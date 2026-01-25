@@ -1,430 +1,716 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'package:dotted_border/dotted_border.dart';
+import 'package:image/image.dart' as img;
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart'; // For kDebugMode
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_gap/flutter_gap.dart';
+import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter_svg/svg.dart';
 import 'package:go_router/go_router.dart';
-import 'package:google_fonts/google_fonts.dart';
-import 'package:iris_designer/Core/Config/Theme.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:uuid/uuid.dart';
+
+// Core Imports
+import 'package:iris_designer/Core/Config/dependecy_injection.dart';
 import 'package:iris_designer/Core/Services/hive_service.dart';
+import 'package:iris_designer/Core/Services/photopea_service.dart';
 import 'package:iris_designer/Core/Shared/Widgets/global_custom_navbar.dart';
 import 'package:iris_designer/Core/Shared/Widgets/global_submit_button_widget.dart';
 import 'package:iris_designer/Core/Utils/toast_service.dart';
+
+// Features
 import 'package:iris_designer/Features/EDITOR/Domain/entities/iris_image.dart';
+import 'package:iris_designer/Features/EDITOR/Domain/usecases/save_image_progress_usecase.dart';
+import 'package:iris_designer/Features/EDITOR/Presentation/bloc/editor_bloc.dart';
 import 'package:iris_designer/Features/EDITOR/Presentation/views/circling_view.dart';
 import 'package:iris_designer/Features/EDITOR/Presentation/views/color_adjustment_view.dart';
 import 'package:iris_designer/Features/EDITOR/Presentation/views/flash_correction_view.dart';
 import 'package:iris_designer/Features/ONBOARDING/Domain/entities/client_session.dart';
 import 'package:iris_designer/Features/PROJECT_HUB/Presentation/bloc/project_hub_bloc.dart';
-import 'dart:ui' as ui;
-import 'dart:typed_data';
-import 'package:path_provider/path_provider.dart';
 
 class IrisEditingScreen extends StatefulWidget {
-  final ClientSession session;
-  final List<String> imageUrls;
+  final Map<String, dynamic> extra;
 
-  const IrisEditingScreen({
-    super.key,
-    required this.imageUrls,
-    required this.session,
-  });
+  const IrisEditingScreen({super.key, required this.extra});
 
   @override
   State<IrisEditingScreen> createState() => _IrisEditingScreenState();
 }
 
 class _IrisEditingScreenState extends State<IrisEditingScreen> {
-  late List<IrisImage> _projectImages;
+  // --- ENGINE CONFIG ---
+  final String photopeaUrl = 'https://www.photopea.com';
+  bool _isProcessing = false;
+
+  // --- DATA ---
+  late ClientSession _session;
+  List<IrisImage> _projectImages = [];
   int _selectedImageIndex = 0;
   int _currentStep = 0;
 
+  // --- TOOLS ---
   double _outerRadiusVal = 0.5;
   double _innerRadiusVal = 0.2;
   double _ovalRatio = 1.0;
-  Offset _circleOffset = Offset.zero;
+  Offset _outerCircleOffset = Offset.zero;
+  Offset _innerCircleOffset = Offset.zero;
+
+  /// Last known size of the CirclingView layout. Used to map overlay → image precisely.
+  Size? _circlingViewSize;
 
   double _brightness = 0.0;
   double _contrast = 0.0;
   double _saturation = 0.0;
-  Color? _tintColor;
+  double _hue = 0.0;
+
+  // ✅ POLLING TIMER
+  Timer? _readinessTimer;
 
   @override
   void initState() {
     super.initState();
-    _projectImages = widget.imageUrls.map((path) {
-      bool isProcessed =
-          path.contains('cropped_') || path.contains('flash_corrected');
+    _session = widget.extra['session'] as ClientSession;
+    final urls = List<String>.from(widget.extra['imageUrls'] ?? []);
+
+    _projectImages = urls.map((path) {
+      bool isProcessed = path.contains('edited_');
       return IrisImage(
-        id: UniqueKey().toString(),
+        id: const Uuid().v4(),
         imagePath: path,
         isCirclingDone: isProcessed,
         isFlashDone: isProcessed,
         isColorDone: isProcessed,
       );
     }).toList();
+
+    PhotopeaService().onSaveResult = (base64Data) {
+      _handlePhotopeaResult(base64Data);
+    };
+  }
+
+  @override
+  void dispose() {
+    _readinessTimer?.cancel();
+    super.dispose();
+  }
+
+  IrisImage get _activeImage => _projectImages[_selectedImageIndex];
+  bool get _allImagesDone => _projectImages.every((img) => img.isFullyEdited);
+
+  // --- ACTIONS ---
+
+  Future<void> _switchImage(int index) async {
+    setState(() {
+      _selectedImageIndex = index;
+      _currentStep = 0;
+      _resetTools();
+    });
+
+    // Load new image in Photopea
+    debugPrint("🔄 Switching to image $index");
+    await PhotopeaService().loadImage(_projectImages[index].imagePath);
+  }
+
+  /// Removes an image from the queue and from the raw images list app-wide.
+  void _removeImageFromQueue(int index) {
+    if (_projectImages.length <= 1) {
+      ToastService.showError(
+        context,
+        title: "Cannot remove",
+        message: "Keep at least one image in the queue.",
+      );
+      return;
+    }
+    final img = _projectImages[index];
+    final removedPath = img.originalPath;
+
+    setState(() {
+      _projectImages.removeAt(index);
+      if (_selectedImageIndex >= _projectImages.length) {
+        _selectedImageIndex = _projectImages.length - 1;
+      } else if (index < _selectedImageIndex) {
+        _selectedImageIndex--;
+      }
+    });
+
+    context.read<ProjectHubBloc>().add(
+      RemoveImageTriggered(imagePath: removedPath),
+    );
+    HiveService.removeImageFromSession(_session.id, removedPath);
+
+    if (_projectImages.isNotEmpty) {
+      PhotopeaService().loadImage(
+        _projectImages[_selectedImageIndex].imagePath,
+      );
+    }
+  }
+
+  void _resetTools() {
+    _outerRadiusVal = 0.5;
+    _innerRadiusVal = 0.2;
+    _ovalRatio = 1.0;
+    _outerCircleOffset = Offset.zero;
+    _innerCircleOffset = Offset.zero;
+    _brightness = 0.0;
+    _contrast = 0.0;
+    _saturation = 0.0;
+    _hue = 0.0;
+  }
+
+  /// Inner circle shrink factor: inner cleared area uses radius * k (< 1) so the "small circle" is smaller.
+  static const double _innerShrink = 0.85;
+
+  /// Applies circling in Dart to match overlay: keep only the ring between outer (blue) and inner (red).
+  /// Uses view→image mapping when _circlingViewSize is set. Clears outside outer ellipse and inside inner circle.
+  Future<String?> _applyCirclingInDart() async {
+    final path = _activeImage.imagePath;
+    final file = File(path);
+    if (!await file.exists()) return null;
+    final bytes = await file.readAsBytes();
+    img.Image? decoded = img.decodeImage(bytes);
+    if (decoded == null) return null;
+
+    final w = decoded.width;
+    final h = decoded.height;
+    final vw = _circlingViewSize?.width ?? w.toDouble();
+    final vh = _circlingViewSize?.height ?? h.toDouble();
+    final scale = (vw / w) < (vh / h) ? (vw / w) : (vh / h);
+    final shortestSide = vw < vh ? vw : vh;
+
+    final cxOuter = (w / 2) + (vw * _outerCircleOffset.dx / scale);
+    final cyOuter = (h / 2) + (vh * _outerCircleOffset.dy / scale);
+    final cxInner = (w / 2) + (vw * _innerCircleOffset.dx / scale);
+    final cyInner = (h / 2) + (vh * _innerCircleOffset.dy / scale);
+    final or = _outerRadiusVal * (shortestSide / 2);
+    final ir = _innerRadiusVal * (shortestSide / 2) * _innerShrink;
+    final rx = or / scale;
+    final ry = (or * _ovalRatio) / scale;
+    final rix = ir / scale;
+    final riy = ir / scale;
+    if (rx <= 0 || ry <= 0 || rix <= 0 || riy <= 0) return null;
+
+    img.Image out = decoded.convert(numChannels: 4);
+    for (int y = 0; y < out.height; y++) {
+      for (int x = 0; x < out.width; x++) {
+        final u = (x - cxOuter) / rx;
+        final v = (y - cyOuter) / ry;
+        final outsideOuter = (u * u + v * v) > 1.0;
+        final ui = (x - cxInner) / rix;
+        final vi = (y - cyInner) / riy;
+        final insideInner = (ui * ui + vi * vi) < 1.0;
+        if (outsideOuter || insideInner) {
+          out.setPixelRgba(x, y, 0, 0, 0, 0);
+        }
+      }
+    }
+
+    final png = img.encodePng(out);
+    final tempDir = await getTemporaryDirectory();
+    final newPath =
+        '${tempDir.path}/edited_${DateTime.now().millisecondsSinceEpoch}.png';
+    await File(newPath).writeAsBytes(png);
+    return newPath;
+  }
+
+  void _handleEditingResult(String newPath) {
+    if (!mounted) return;
+    setState(() {
+      _isProcessing = false;
+      IrisImage updated = _activeImage.copyWith(imagePath: newPath);
+      if (_currentStep == 0) updated = updated.copyWith(isCirclingDone: true);
+      if (_currentStep == 1) updated = updated.copyWith(isFlashDone: true);
+      if (_currentStep == 2) updated = updated.copyWith(isColorDone: true);
+      _projectImages[_selectedImageIndex] = updated;
+      if (_currentStep < 2) {
+        _currentStep++;
+        if (_currentStep == 2) _resetTools();
+      }
+    });
+    ToastService.showSuccess(
+      context,
+      title: "Success",
+      message: "Step Applied.",
+    );
+  }
+
+  Future<void> _applyCurrentStep() async {
+    setState(() => _isProcessing = true);
+
+    try {
+      if (_currentStep == 0) {
+        debugPrint("🔵 Applying circling (Dart)...");
+        final newPath = await _applyCirclingInDart();
+        if (newPath != null && mounted) {
+          _handleEditingResult(newPath);
+        } else {
+          setState(() => _isProcessing = false);
+          if (mounted) {
+            ToastService.showError(
+              context,
+              title: "Error",
+              message: "Failed to apply circling",
+            );
+          }
+        }
+        return;
+      }
+
+      if (_currentStep == 2) {
+        debugPrint("🎨 Applying color adjustment...");
+        await PhotopeaService().adjustColor(
+          brightness: _brightness,
+          contrast: _contrast,
+          saturation: _saturation,
+          hue: _hue,
+        );
+        await Future.delayed(const Duration(milliseconds: 1000));
+        debugPrint("✅ Color adjustment applied, waiting before export...");
+      }
+
+      debugPrint("📤 Exporting image...");
+      await PhotopeaService().exportImage();
+      debugPrint("⏳ Waiting for export result...");
+
+      Future.delayed(const Duration(seconds: 30), () {
+        if (_isProcessing && mounted) {
+          setState(() => _isProcessing = false);
+        }
+      });
+    } catch (e) {
+      debugPrint("❌ Apply error: $e");
+      setState(() => _isProcessing = false);
+      if (mounted) {
+        ToastService.showError(
+          context,
+          title: "Error",
+          message: "Failed to apply changes",
+        );
+      }
+    }
+  }
+
+  Future<void> _handlePhotopeaResult(String base64Data) async {
+    try {
+      final bytes = base64Decode(base64Data);
+      final tempDir = await getTemporaryDirectory();
+      final newPath =
+          '${tempDir.path}/edited_${DateTime.now().millisecondsSinceEpoch}.png';
+      await File(newPath).writeAsBytes(bytes);
+      if (mounted) _handleEditingResult(newPath);
+    } catch (e) {
+      setState(() => _isProcessing = false);
+      debugPrint("Export Error: $e");
+      if (mounted) {
+        ToastService.showError(
+          context,
+          title: "Error",
+          message: "Failed to process image",
+        );
+      }
+    }
   }
 
   Future<void> _navigateBack() async {
     final bool shouldLeave =
         await showDialog<bool>(
           context: context,
-          builder: (BuildContext context) {
-            return AlertDialog(
-              backgroundColor: const Color(0xFF1F2937),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(16),
+          builder: (context) => AlertDialog(
+            backgroundColor: const Color(0xFF1F2937),
+            title: const Text(
+              "Unsaved Progress",
+              style: TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
               ),
-              title: const Text(
-                "Unsaved Progress",
-                style: TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.bold,
+            ),
+            content: const Text(
+              "Leave without finishing?",
+              style: TextStyle(color: Colors.grey),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text(
+                  "Cancel",
+                  style: TextStyle(color: Colors.grey),
                 ),
               ),
-              content: const Text(
-                "Your progress on this page will be dismissed if you go back.\nAre you sure you want to leave?",
-                style: TextStyle(color: Colors.grey, height: 1.5),
+              ElevatedButton(
+                onPressed: () => Navigator.pop(context, true),
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+                child: const Text("Leave"),
               ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.of(context).pop(false),
-                  child: const Text(
-                    "Cancel",
-                    style: TextStyle(color: Colors.grey),
-                  ),
-                ),
-                ElevatedButton(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.redAccent,
-                    foregroundColor: Colors.white,
-                  ),
-                  onPressed: () => Navigator.of(context).pop(true),
-                  child: const Text("Leave"),
-                ),
-              ],
-            );
-          },
+            ],
+          ),
         ) ??
         false;
 
     if (shouldLeave) {
+      final uneditedPaths = _projectImages.map((e) => e.originalPath).toList();
+      await HiveService.updateSessionImages(_session.id, uneditedPaths);
+      if (!mounted) return;
       context.goNamed(
         'image-prep',
-        extra: {'session': widget.session, 'returnedImages': widget.imageUrls},
+        extra: {'session': _session, 'returnedImages': uneditedPaths},
       );
     }
   }
 
-  // ✅ UPDATED: High Quality Crop
-  Future<void> _cropAndSaveIris() async {
-    try {
-      final Completer<ui.Image> completer = Completer();
-      final ImageProvider provider = FileImage(File(_activeImage.imagePath));
-
-      provider
-          .resolve(const ImageConfiguration())
-          .addListener(
-            ImageStreamListener((ImageInfo info, bool _) {
-              completer.complete(info.image);
-            }),
-          );
-
-      final ui.Image image = await completer.future;
-
-      // ✅ Use Actual Image Dimensions (e.g., 2000x2000)
-      final double width = image.width.toDouble();
-      final double height = image.height.toDouble();
-
-      final Offset center = Offset(
-        (width / 2) + ((width / 2) * _circleOffset.dx),
-        (height / 2) + ((height / 2) * _circleOffset.dy),
-      );
-
-      final double shortestSide = width < height ? width : height;
-      final double baseRadius = shortestSide / 2;
-
-      final double outerWidth = baseRadius * _outerRadiusVal * 2;
-      final double outerHeight = outerWidth * _ovalRatio;
-
-      final double innerWidth = baseRadius * _innerRadiusVal * 2;
-      final double innerHeight = innerWidth;
-
-      final Rect outerRect = Rect.fromCenter(
-        center: center,
-        width: outerWidth,
-        height: outerHeight,
-      );
-      final Rect innerRect = Rect.fromCenter(
-        center: center,
-        width: innerWidth,
-        height: innerHeight,
-      );
-
-      // ✅ Ensure crop size is sufficient for high quality
-      final double cropSize = outerWidth > outerHeight
-          ? outerWidth
-          : outerHeight;
-
-      final ui.PictureRecorder recorder = ui.PictureRecorder();
-      final Canvas canvas = Canvas(recorder);
-
-      final double shiftX = (cropSize / 2) - center.dx;
-      final double shiftY = (cropSize / 2) - center.dy;
-      canvas.translate(shiftX, shiftY);
-
-      Path maskPath = Path()
-        ..addOval(outerRect)
-        ..addOval(innerRect)
-        ..fillType = PathFillType.evenOdd;
-
-      canvas.clipPath(maskPath);
-      canvas.drawImage(image, Offset.zero, Paint());
-
-      final ui.Picture picture = recorder.endRecording();
-
-      // ✅ Save at Full Resolution
-      final ui.Image processedImage = await picture.toImage(
-        cropSize.toInt(),
-        cropSize.toInt(),
-      );
-      final ByteData? pngBytes = await processedImage.toByteData(
-        format: ui.ImageByteFormat.png,
-      );
-
-      if (pngBytes != null) {
-        final directory = await getTemporaryDirectory();
-        final String newPath =
-            '${directory.path}/cropped_${DateTime.now().millisecondsSinceEpoch}.png';
-        final File newFile = File(newPath);
-        await newFile.writeAsBytes(pngBytes.buffer.asUint8List());
-
-        setState(() {
-          IrisImage updatedImg = _activeImage.copyWith(
-            imagePath: newPath,
-            isCirclingDone: true,
-          );
-          _projectImages[_selectedImageIndex] = updatedImg;
-          _currentStep++;
-        });
-
-        ToastService.showSuccess(
-          context,
-          title: "Success",
-          message: "Iris extracted (Full Quality)",
-        );
-      }
-    } catch (e) {
-      debugPrint("Error cropping: $e");
-    }
-  }
-
-  void _resetSelection() {
-    setState(() {
-      final originalPath = widget.imageUrls[_selectedImageIndex];
-      _projectImages[_selectedImageIndex] = _projectImages[_selectedImageIndex]
-          .copyWith(imagePath: originalPath, isCirclingDone: false);
-      _outerRadiusVal = 0.5;
-      _innerRadiusVal = 0.2;
-      _ovalRatio = 1.0;
-      _circleOffset = Offset.zero;
-
-      _brightness = 0.0;
-      _contrast = 0.0;
-      _saturation = 0.0;
-
-      ToastService.showSuccess(
-        context,
-        title: "Reset",
-        message: "Selection reverted.",
-      );
-    });
-  }
-
-  IrisImage get _activeImage => _projectImages[_selectedImageIndex];
-  bool get _allImagesDone => _projectImages.every((img) => img.isFullyEdited);
-
-  void _switchImage(int index) {
-    setState(() {
-      _selectedImageIndex = index;
-      _currentStep = 0;
-      _outerRadiusVal = 0.5;
-      _innerRadiusVal = 0.2;
-      _ovalRatio = 1.0;
-      _circleOffset = Offset.zero;
-      _brightness = 0.0;
-      _contrast = 0.0;
-      _saturation = 0.0;
-    });
-  }
-
-  void _applyCurrentStep() async {
-    if (_currentStep == 0) {
-      await _cropAndSaveIris();
-    } else {
+  Future<void> _pickImage(BuildContext context) async {
+    FilePickerResult? result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['jpg', 'png'],
+    );
+    if (result != null) {
       setState(() {
-        if (_currentStep == 1) {
-          IrisImage updated = _activeImage.copyWith(isFlashDone: true);
-          _projectImages[_selectedImageIndex] = updated;
-        } else if (_currentStep == 2) {
-          IrisImage updated = _activeImage.copyWith(isColorDone: true);
-          _projectImages[_selectedImageIndex] = updated;
-        }
-        if (_currentStep < 2) _currentStep++;
+        _projectImages.add(
+          IrisImage(
+            id: const Uuid().v4(),
+            imagePath: result.files.single.path!,
+          ),
+        );
       });
       ToastService.showSuccess(
         context,
-        title: "Saved",
-        message: "Changes applied.",
+        title: "Image Added",
+        message: "Queue updated.",
       );
     }
   }
 
   void _skipCurrentStep() {
     setState(() {
-      if (_currentStep == 1) {
-        IrisImage updated = _activeImage.copyWith(isFlashDone: true);
-        _projectImages[_selectedImageIndex] = updated;
-        _currentStep++;
-        ToastService.showSuccess(
-          context,
-          title: "Skipped",
-          message: "Flash correction skipped.",
+      if (_currentStep == 1)
+        _projectImages[_selectedImageIndex] = _activeImage.copyWith(
+          isFlashDone: true,
         );
-      } else if (_currentStep == 2) {
-        IrisImage updated = _activeImage.copyWith(isColorDone: true);
-        _projectImages[_selectedImageIndex] = updated;
-        ToastService.showSuccess(
-          context,
-          title: "Skipped",
-          message: "Color adjustment skipped.",
+      if (_currentStep == 2)
+        _projectImages[_selectedImageIndex] = _activeImage.copyWith(
+          isColorDone: true,
         );
-      }
+      if (_currentStep < 2) _currentStep++;
     });
   }
 
-  Future<void> _pickImage(BuildContext context) async {
-    FilePickerResult? result = await FilePicker.platform.pickFiles(
-      type: FileType.custom,
-      allowedExtensions: ['jpg', 'jpeg', 'png'],
-      allowMultiple: false,
+  void _resetSelection() {
+    setState(() {
+      _resetTools();
+      // Restore active image to raw/original
+      final rawPath = _activeImage.originalPath;
+      _projectImages[_selectedImageIndex] = _activeImage.copyWith(
+        imagePath: rawPath,
+        isCirclingDone: false,
+        isFlashDone: false,
+        isColorDone: false,
+      );
+    });
+    ToastService.showSuccess(
+      context,
+      title: "Reset",
+      message: "Raw image restored; tools reset.",
     );
-    if (result != null && result.files.single.path != null) {
-      final String filePath = result.files.single.path!;
-      if (_projectImages.length >= 6) {
-        if (mounted)
-          ToastService.showError(
-            context,
-            title: "Limit Reached",
-            message: "Max 6 images.",
-          );
-        return;
-      }
-      if (mounted) {
-        setState(() {
-          _projectImages.add(
-            IrisImage(id: UniqueKey().toString(), imagePath: filePath),
-          );
-        });
-        context.read<ProjectHubBloc>().add(
-          UploadImageTriggered(
-            projectId: widget.session.id,
-            imagePath: filePath,
-          ),
-        );
-        ToastService.showSuccess(
-          context,
-          title: "Image Added",
-          message: "New iris added to queue.",
-        );
-      }
-    }
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFF12151B),
-      appBar: CustomNavBar(
-        title: "Iris Editor ",
-        subtitle: widget.session.clientName,
-        onArrowPressed: _navigateBack,
-        helpDialogNum: '3',
-      ),
-      floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
-      floatingActionButton: Opacity(
-        opacity: _allImagesDone ? 1.0 : 0.5,
-        child: SizedBox(
-          width: 250,
-          child: GlobalSubmitButtonWidget(
-            title: "Go create art",
-            icon: 'assets/Icons/brush.svg',
-            svgColor: Colors.white,
-            onPressed: () async {
-              if (!_allImagesDone) {
-                ToastService.showError(
-                  context,
-                  title: "Pending Images",
-                  message:
-                      "Please finish editing all images in the queue first.",
-                );
-              } else {
-                final currentPaths = _projectImages
-                    .map((e) => e.imagePath)
-                    .toList();
-                
-                // ✅ Save edited images to generatedArt in Hive
-                await HiveService.updateSessionGeneratedArt(
-                  widget.session.id,
-                  currentPaths,
-                );
-                debugPrint("💾 EDITOR: Saved ${currentPaths.length} edited images to Hive generatedArt");
-                
-                context.go(
-                  '/image-prep-2',
-                  extra: {'session': widget.session, 'imageUrls': currentPaths},
-                );
-              }
-            },
+    return BlocProvider(
+      create: (context) =>
+          EditorBloc(saveProgressUseCase: sl<SaveImageProgressUseCase>()),
+      child: Scaffold(
+        backgroundColor: const Color(0xFF12151B),
+        appBar: CustomNavBar(
+          title: "Iris Editor",
+          subtitle: _session.clientName,
+          onArrowPressed: _navigateBack,
+          helpDialogNum: '3',
+        ),
+        floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
+        floatingActionButton: Opacity(
+          opacity: _allImagesDone ? 1.0 : 0.5,
+          child: SizedBox(
+            width: 250,
+            child: GlobalSubmitButtonWidget(
+              title: "Go create art",
+              icon: 'assets/Icons/brush.svg',
+              svgColor: Colors.white,
+              onPressed: () async {
+                if (!_allImagesDone) {
+                  ToastService.showError(
+                    context,
+                    title: "Pending",
+                    message: "Finish all images first.",
+                  );
+                } else {
+                  final paths = _projectImages.map((e) => e.imagePath).toList();
+                  await HiveService.updateSessionGeneratedArt(
+                    _session.id,
+                    paths,
+                  );
+                  context.go(
+                    '/image-prep-2',
+                    extra: {'session': _session, 'imageUrls': paths},
+                  );
+                }
+              },
+            ),
           ),
         ),
-      ),
-      body: Column(
-        children: [
-          Expanded(
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(
-                  flex: 3,
-                  child: Column(
-                    children: [
-                      _buildStepHeader(),
-                      Expanded(
-                        child: Container(
-                          margin: const EdgeInsets.all(16),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFF1A1F26),
-                            borderRadius: BorderRadius.circular(16),
-                            border: Border.all(color: Colors.white10),
-                          ),
-                          child: _buildEditorView(),
-                        ),
-                      ),
-                      _buildBottomControls(),
-                    ],
-                  ),
+
+        body: Stack(
+          children: [
+            //!================================================================================================================================================================
+            Positioned.fill(
+              child: InAppWebView(
+                initialUrlRequest: URLRequest(url: WebUri(photopeaUrl)),
+                initialSettings: InAppWebViewSettings(
+                  mediaPlaybackRequiresUserGesture: false,
+                  javaScriptEnabled: true,
+                  domStorageEnabled: true,
+                  isInspectable: kDebugMode,
+                  allowFileAccessFromFileURLs: true,
+                  allowUniversalAccessFromFileURLs: true,
                 ),
-                _buildqueue(),
-              ],
+                onWebViewCreated: (c) {
+                  PhotopeaService().setController(c);
+                },
+                onConsoleMessage: (c, msg) {
+                  final message = msg.message;
+
+                  // ✅ Handle export result FIRST (before filtering)
+                  if (message.startsWith("FLUTTER_IMAGE_DATA:")) {
+                    final base64Data = message.substring(
+                      "FLUTTER_IMAGE_DATA:".length,
+                    );
+                    debugPrint(
+                      "🎉 Received image data: ${base64Data.length} chars",
+                    );
+                    PhotopeaService().onSaveResult?.call(base64Data);
+                    return; // Don't print the huge base64 string
+                  }
+
+                  // Log ALL Photopea-related messages for debugging
+                  if (message.startsWith("FLUTTER_") ||
+                      message.startsWith("PHOTOPEA_") ||
+                      message.contains("FLUTTER_EXPORT_LISTENER_READY") ||
+                      message.contains("PHOTOPEA_SCRIPT") ||
+                      message.contains("PHOTOPEA_ERROR") ||
+                      message.contains("PHOTOPEA_EXPORT")) {
+                    debugPrint("📱 Photopea Console: $message");
+                  }
+
+                  // ✅ Detect when Photopea is ready
+                  if (message.contains("PBJS Que Loaded!") ||
+                      message.contains("adding")) {
+                    Future.delayed(const Duration(seconds: 2), () {
+                      if (!PhotopeaService().isReady) {
+                        debugPrint("✅ Photopea detected as ready via console");
+                        PhotopeaService().setReady();
+
+                        if (_projectImages.isNotEmpty) {
+                          PhotopeaService().loadImage(
+                            _projectImages[0].imagePath,
+                          );
+                        }
+                      }
+                    });
+                  }
+
+                  // ✅ Debug Photopea events
+                  if (msg.message.contains("PHOTOPEA_")) {
+                    debugPrint("🎨 ${msg.message}");
+                  }
+
+                  // ✅ Confirm export listener is ready
+                  if (msg.message.contains("FLUTTER_EXPORT_LISTENER_READY")) {
+                    debugPrint("✅ Export listener is active");
+                  }
+                },
+                onLoadStop: (controller, url) async {
+                  debugPrint("🌐 Photopea page loaded: $url");
+                },
+                onLoadError: (controller, url, code, message) {
+                  debugPrint("❌ Photopea load error: $message");
+                },
+              ),
+            ),
+
+            //!===============================================================================================================================================
+
+            // ------------------------------------------------
+            // 2. UI OVERLAY (Opaque)
+            // ------------------------------------------------
+            Positioned.fill(
+              child: Container(
+                color: const Color(0xFF12151B),
+                child: Column(
+                  children: [
+                    Expanded(
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Expanded(
+                            flex: 3,
+                            child: Column(
+                              children: [
+                                _buildStepHeader(),
+                                Expanded(
+                                  child:
+                                      // _activeImage.isCirclingDone &&
+                                      //     _activeImage.imagePath !=
+                                      //         _activeImage.originalPath
+                                      // ? _buildSplitView()
+                                      // : 
+                                      Container(
+                                          margin: const EdgeInsets.all(16),
+                                          decoration: BoxDecoration(
+                                            color: const Color(0xFF1A1F26),
+                                            borderRadius: BorderRadius.circular(
+                                              16,
+                                            ),
+                                            border: Border.all(
+                                              color: Colors.white10,
+                                            ),
+                                          ),
+                                          child: ClipRRect(
+                                            borderRadius: BorderRadius.circular(
+                                              16,
+                                            ),
+                                            child: _isProcessing
+                                                ? const Center(
+                                                    child:
+                                                        CircularProgressIndicator(),
+                                                  )
+                                                : _buildEditorView(),
+                                          ),
+                                        ),
+                                ),
+                                _buildBottomControls(),
+                              ],
+                            ),
+                          ),
+                          _buildQueue(context),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // --- VIEWS ---
+
+  Widget _buildSplitView() {
+    return Container(
+      margin: const EdgeInsets.all(16),
+      child: Row(
+        children: [
+          // Editing view (original for step 0, cut image for steps 1-2)
+          Expanded(
+            flex: 1,
+            child: Container(
+              decoration: BoxDecoration(
+                color: const Color(0xFF1A1F26),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: Colors.white10),
+              ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(16),
+                child: _isProcessing
+                    ? const Center(child: CircularProgressIndicator())
+                    : _buildEditorViewForSplit(),
+              ),
+            ),
+          ),
+          const SizedBox(width: 16),
+          // Cut image - independent, taking whole space
+          Expanded(
+            flex: 1,
+            child: Container(
+              decoration: BoxDecoration(
+                color: const Color(0xFF1A1F26),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: Colors.green, width: 2),
+              ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(16),
+                child: Image.file(
+                  File(_activeImage.imagePath),
+                  fit: BoxFit.cover,
+                  width: double.infinity,
+                  height: double.infinity,
+                ),
+              ),
             ),
           ),
         ],
       ),
     );
+  }
+
+  Widget _buildEditorViewForSplit() {
+    // For step 0, use original image. For steps 1-2, use cut image
+    final editingImage = _currentStep == 0
+        ? _activeImage.copyWith(imagePath: _activeImage.originalPath)
+        : _activeImage;
+
+    switch (_currentStep) {
+      case 0:
+        return CirclingView(
+          activeImage: editingImage,
+          outerRadius: _outerRadiusVal,
+          innerRadius: _innerRadiusVal,
+          ovalRatio: _ovalRatio,
+          outerCenterOffset: _outerCircleOffset,
+          innerCenterOffset: _innerCircleOffset,
+          onOuterPan: (dx, dy) =>
+              setState(() => _outerCircleOffset += Offset(dx, dy)),
+          onInnerPan: (dx, dy) =>
+              setState(() => _innerCircleOffset += Offset(dx, dy)),
+          onOuterRadiusChange: (v) => setState(() => _outerRadiusVal = v),
+          onInnerRadiusChange: (v) => setState(() {
+            _innerRadiusVal = v.clamp(0.0, _outerRadiusVal);
+          }),
+          onOvalRatioChange: (ratio) => setState(() => _ovalRatio = ratio),
+          onLayoutSize: (s) {
+            if (_circlingViewSize == s) return;
+            final size = s;
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (!mounted) return;
+              setState(() => _circlingViewSize = size);
+            });
+          },
+        );
+      case 1:
+        return FlashCorrectionView(
+          activeImage: editingImage,
+          onBrushStroke: (p) => PhotopeaService().correctFlashAtPoints(p, 20.0),
+        );
+      case 2:
+        return ColorAdjustmentView(
+          activeImage: editingImage,
+          brightness: _brightness,
+          contrast: _contrast,
+          saturation: _saturation,
+          hue: _hue,
+          onAdjustmentChanged: (b, c, s, h) => setState(() {
+            _brightness = b;
+            _contrast = c;
+            _saturation = s;
+            _hue = h;
+          }),
+        );
+      default:
+        return const SizedBox();
+    }
   }
 
   Widget _buildEditorView() {
@@ -435,23 +721,30 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
           outerRadius: _outerRadiusVal,
           innerRadius: _innerRadiusVal,
           ovalRatio: _ovalRatio,
-          centerOffset: _circleOffset,
-          onPanUpdate: (delta) => setState(() => _circleOffset += delta),
-          onRadiusChange: (newRadius) =>
-              setState(() => _outerRadiusVal = newRadius),
+          outerCenterOffset: _outerCircleOffset,
+          innerCenterOffset: _innerCircleOffset,
+          onOuterPan: (dx, dy) =>
+              setState(() => _outerCircleOffset += Offset(dx, dy)),
+          onInnerPan: (dx, dy) =>
+              setState(() => _innerCircleOffset += Offset(dx, dy)),
+          onOuterRadiusChange: (v) => setState(() => _outerRadiusVal = v),
+          onInnerRadiusChange: (v) => setState(() {
+            _innerRadiusVal = v.clamp(0.0, _outerRadiusVal);
+          }),
+          onOvalRatioChange: (ratio) => setState(() => _ovalRatio = ratio),
+          onLayoutSize: (s) {
+            if (_circlingViewSize == s) return;
+            final size = s;
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (!mounted) return;
+              setState(() => _circlingViewSize = size);
+            });
+          },
         );
       case 1:
         return FlashCorrectionView(
           activeImage: _activeImage,
-          onImageUpdated: (newPath) {
-            setState(() {
-              IrisImage updated = _activeImage.copyWith(
-                imagePath: newPath,
-                isFlashDone: true,
-              );
-              _projectImages[_selectedImageIndex] = updated;
-            });
-          },
+          onBrushStroke: (p) => PhotopeaService().correctFlashAtPoints(p, 20.0),
         );
       case 2:
         return ColorAdjustmentView(
@@ -459,17 +752,196 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
           brightness: _brightness,
           contrast: _contrast,
           saturation: _saturation,
-          tintColor: _tintColor,
-          onAdjustmentChanged: (b, c, s, t) => setState(() {
+          hue: _hue,
+          onAdjustmentChanged: (b, c, s, h) => setState(() {
             _brightness = b;
             _contrast = c;
             _saturation = s;
-            _tintColor = t;
+            _hue = h;
           }),
         );
       default:
         return const SizedBox();
     }
+  }
+
+  // --- UI COMPONENTS ---
+
+  Container _buildQueue(BuildContext context) {
+    return Container(
+      width: 280,
+      color: const Color(0xFF181E28),
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text(
+                "QUEUE",
+                style: TextStyle(
+                  color: Colors.grey,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 1.2,
+                ),
+              ),
+              Text(
+                "${_projectImages.where((i) => i.isFullyEdited).length}/${_projectImages.length} done",
+                style: const TextStyle(color: Colors.grey, fontSize: 12),
+              ),
+            ],
+          ),
+          const Gap(16),
+          Expanded(
+            child: ListView.separated(
+              itemCount: _projectImages.length + 1,
+              separatorBuilder: (_, __) => const Gap(12),
+              itemBuilder: (context, index) {
+                if (index == _projectImages.length) {
+                  return InkWell(
+                    onTap: () => _pickImage(context),
+                    child: DottedBorder(
+                      color: const Color(0xFF687890),
+                      strokeWidth: 2,
+                      dashPattern: const [8, 4],
+                      borderType: BorderType.RRect,
+                      radius: const Radius.circular(12),
+                      child: Container(
+                        height: 100,
+                        width: double.infinity,
+                        decoration: BoxDecoration(
+                          color: Colors.white.withOpacity(0.02),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Container(
+                              width: 48,
+                              height: 48,
+                              decoration: const BoxDecoration(
+                                color: Color(0xFF2A3441),
+                                shape: BoxShape.circle,
+                              ),
+                              padding: const EdgeInsets.all(12),
+                              child: const Icon(
+                                Icons.cloud_upload_outlined,
+                                color: Color(0xFF94A3B8),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  );
+                }
+                final img = _projectImages[index];
+                final isSelected = index == _selectedImageIndex;
+                final isDone = img.isFullyEdited;
+                return _QueueImageItem(
+                  img: img,
+                  isSelected: isSelected,
+                  isDone: isDone,
+                  onTap: () => _switchImage(index),
+                  onRemove: () => _removeImageFromQueue(index),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStepHeader() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+      decoration: const BoxDecoration(
+        border: Border(bottom: BorderSide(color: Colors.white10)),
+      ),
+      child: Row(
+        children: [
+          _buildStepItem(0, "Circling", 'assets/Icons/view_finder_solid.svg'),
+          const Gap(32),
+          _buildStepItem(1, "Flash Correction", 'assets/Icons/flash_solid.svg'),
+          const Gap(32),
+          _buildStepItem(
+            2,
+            "Color Adjustment",
+            'assets/Icons/color_swatch_solid.svg',
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStepItem(int index, String title, String iconpath) {
+    final bool isActive = _currentStep == index;
+    final bool isDone = index == 0
+        ? _activeImage.isCirclingDone
+        : index == 1
+            ? _activeImage.isFlashDone
+            : _activeImage.isColorDone;
+    final bool isLocked = index == 1
+        ? !_activeImage.isCirclingDone
+        : index == 2
+            ? !_activeImage.isFlashDone
+            : false;
+    final bool isAccessible = !isLocked;
+
+    final Color color = isActive
+        ? Colors.blueAccent
+        : isDone
+            ? Colors.green
+            : isLocked
+                ? Colors.white12
+                : Colors.grey;
+
+    final Widget iconWidget = isLocked
+        ? Icon(
+            Icons.lock,
+            color: color,
+            size: isActive ? 20 : 15,
+          )
+        : SvgPicture.asset(
+            iconpath,
+            colorFilter: ColorFilter.mode(color, BlendMode.srcIn),
+            width: isActive ? 20 : 15,
+            height: isActive ? 20 : 15,
+          );
+
+    final Color barColor = isActive
+        ? Colors.blueAccent
+        : isDone
+            ? Colors.green
+            : Colors.transparent;
+
+    return InkWell(
+      onTap: isAccessible ? () => setState(() => _currentStep = index) : null,
+      child: Column(
+        children: [
+          Row(
+            children: [
+              iconWidget,
+              const Gap(8),
+              Text(
+                title,
+                style: TextStyle(
+                  color: color,
+                  fontWeight: isActive ? FontWeight.bold : FontWeight.normal,
+                ),
+              ),
+            ],
+          ),
+          const Gap(8),
+          Container(
+            height: 2,
+            width: 200,
+            color: barColor,
+          ),
+        ],
+      ),
+    );
   }
 
   Widget _buildBottomControls() {
@@ -519,8 +991,28 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
             ),
             const Gap(16),
           ],
-          if (_currentStep > 0) const Spacer(),
+
+          if (_currentStep == 2) ...[
+            Expanded(
+              child: _buildSimpleSlider(
+                label: "Brightness",
+                value: _brightness / 100,
+                onChanged: (val) => setState(() => _brightness = val * 100),
+              ),
+            ),
+            const Gap(16),
+            Expanded(
+              child: _buildSimpleSlider(
+                label: "Contrast",
+                value: _contrast / 100,
+                onChanged: (val) => setState(() => _contrast = val * 100),
+              ),
+            ),
+            const Gap(16),
+          ],
+
           if (_currentStep > 0) ...[
+            const Spacer(),
             TextButton(
               onPressed: _skipCurrentStep,
               child: const Text(
@@ -533,6 +1025,7 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
             ),
             const Gap(16),
           ],
+
           ElevatedButton.icon(
             onPressed: _applyCurrentStep,
             style: ElevatedButton.styleFrom(
@@ -591,220 +1084,124 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
       ),
     );
   }
+}
 
-  Widget _buildStepHeader() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-      decoration: const BoxDecoration(
-        border: Border(bottom: BorderSide(color: Colors.white10)),
-      ),
-      child: Row(
-        children: [
-          _buildStepItem(0, "Circling", 'assets/Icons/view_finder_solid.svg'),
-          const Gap(32),
-          _buildStepItem(1, "Flash Correction", 'assets/Icons/flash_solid.svg'),
-          const Gap(32),
-          _buildStepItem(
-            2,
-            "Color Adjustment",
-            'assets/Icons/color_swatch_solid.svg',
-          ),
-        ],
-      ),
-    );
-  }
+// ---------------------------------------------------------------------------
+// Queue image item: hover to show trash, tap to select, trash to remove
+// ---------------------------------------------------------------------------
+class _QueueImageItem extends StatefulWidget {
+  final IrisImage img;
+  final bool isSelected;
+  final bool isDone;
+  final VoidCallback onTap;
+  final VoidCallback onRemove;
 
-  Widget _buildStepItem(int index, String title, String iconpath) {
-    bool isActive = _currentStep == index;
-    bool isDone = false;
-    if (index == 0) isDone = _activeImage.isCirclingDone;
-    if (index == 1) isDone = _activeImage.isFlashDone;
-    if (index == 2) isDone = _activeImage.isColorDone;
-    bool isAccessible =
-        index == 0 ||
-        (index == 1 && _activeImage.isCirclingDone) ||
-        (index == 2 && _activeImage.isFlashDone) ||
-        isDone;
-    Color color = isActive
+  const _QueueImageItem({
+    required this.img,
+    required this.isSelected,
+    required this.isDone,
+    required this.onTap,
+    required this.onRemove,
+  });
+
+  @override
+  State<_QueueImageItem> createState() => _QueueImageItemState();
+}
+
+class _QueueImageItemState extends State<_QueueImageItem> {
+  bool _isHovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final borderColor = widget.isSelected
         ? Colors.blueAccent
-        : (isAccessible ? Colors.grey : Colors.white12);
-    return InkWell(
-      onTap: isAccessible ? () => setState(() => _currentStep = index) : null,
-      child: Column(
-        children: [
-          Row(
-            children: [
-              SvgPicture.asset(
-                iconpath,
-                color: isActive ? Colors.blueAccent : color,
-                width: isActive ? 20 : 15,
-                height: isActive ? 20 : 15,
-              ),
-              const Gap(8),
-              Text(
-                title,
-                style: TextStyle(
-                  color: isActive ? Colors.white : color,
-                  fontWeight: isActive ? FontWeight.bold : FontWeight.normal,
-                ),
-              ),
-            ],
-          ),
-          const Gap(8),
-          Container(
-            height: 2,
-            width: 200,
-            color: isActive ? Colors.blueAccent : Colors.transparent,
-          ),
-        ],
-      ),
-    );
-  }
+        : (widget.isDone ? Colors.green : Colors.transparent);
+    final badgeColor = widget.isSelected
+        ? Colors.blueAccent
+        : (widget.isDone ? Colors.green : Colors.grey.withOpacity(0.8));
+    final badgeText = widget.isSelected
+        ? "EDITING"
+        : (widget.isDone ? "DONE" : "PENDING");
 
-  Container _buildqueue() {
-    return Container(
-      width: 280,
-      color: const Color(0xFF181E28),
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+    return MouseRegion(
+      onEnter: (_) => setState(() => _isHovered = true),
+      onExit: (_) => setState(() => _isHovered = false),
+      child: GestureDetector(
+        onTap: widget.onTap,
+        child: Container(
+          height: 200,
+          decoration: BoxDecoration(
+            border: Border.all(
+              color: borderColor,
+              width: (widget.isSelected || widget.isDone) ? 2 : 0,
+            ),
+            borderRadius: BorderRadius.circular(8),
+            color: const Color(0xFF2A3441),
+          ),
+          child: Stack(
+            fit: StackFit.expand,
             children: [
-              const Text(
-                "QUEUE",
-                style: TextStyle(
-                  color: Colors.grey,
-                  fontWeight: FontWeight.bold,
-                  letterSpacing: 1.2,
+              ClipRRect(
+                borderRadius: BorderRadius.circular(6),
+                child: ColorFiltered(
+                  colorFilter: (!widget.isSelected && !widget.isDone)
+                      ? const ColorFilter.mode(Colors.black54, BlendMode.darken)
+                      : const ColorFilter.mode(
+                          Colors.transparent,
+                          BlendMode.dst,
+                        ),
+                  child: Image.file(
+                    File(widget.img.imagePath),
+                    fit: BoxFit.cover,
+                  ),
                 ),
               ),
-              Text(
-                "${_projectImages.where((i) => i.isFullyEdited).length}/${_projectImages.length} done",
-                style: const TextStyle(color: Colors.grey, fontSize: 12),
-              ),
-            ],
-          ),
-          const Gap(16),
-          Expanded(
-            child: ListView.separated(
-              itemCount: _projectImages.length + 1,
-              separatorBuilder: (_, __) => const Gap(12),
-              itemBuilder: (context, index) {
-                if (index == _projectImages.length) {
-                  return InkWell(
-                    onTap: () => _pickImage(context),
-                    borderRadius: BorderRadius.circular(12),
-                    child: DottedBorder(
-                      color: const Color(0xFF687890),
-                      strokeWidth: 2,
-                      dashPattern: const [8, 4],
-                      borderType: BorderType.RRect,
-                      radius: const Radius.circular(12),
-                      child: Container(
-                        height: 100,
-                        width: double.infinity,
-                        decoration: BoxDecoration(
-                          color: Colors.white.withOpacity(0.02),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Container(
-                              width: 48,
-                              height: 48,
-                              decoration: const BoxDecoration(
-                                color: Color(0xFF2A3441),
-                                shape: BoxShape.circle,
-                              ),
-                              padding: const EdgeInsets.all(12),
-                              child: const Icon(
-                                Icons.cloud_upload_outlined,
-                                color: Color(0xFF94A3B8),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  );
-                }
-                final img = _projectImages[index];
-                final isSelected = index == _selectedImageIndex;
-                final isDone = img.isFullyEdited;
-                Color borderColor = isSelected
-                    ? Colors.blueAccent
-                    : (isDone ? Colors.green : Colors.transparent);
-                Color badgeColor = isSelected
-                    ? Colors.blueAccent
-                    : (isDone ? Colors.green : Colors.grey.withOpacity(0.8));
-                String badgeText = isSelected
-                    ? "EDITING"
-                    : (isDone ? "DONE" : "PENDING");
-                return GestureDetector(
-                  onTap: () => _switchImage(index),
-                  child: Container(
-                    height: 200,
-                    decoration: BoxDecoration(
-                      border: Border.all(
-                        color: borderColor,
-                        width: (isSelected || isDone) ? 2 : 0,
-                      ),
-                      borderRadius: BorderRadius.circular(8),
-                      color: const Color(0xFF2A3441),
-                    ),
-                    child: Stack(
-                      fit: StackFit.expand,
-                      children: [
-                        ClipRRect(
-                          borderRadius: BorderRadius.circular(6),
-                          child: ColorFiltered(
-                            colorFilter: (!isSelected && !isDone)
-                                ? const ColorFilter.mode(
-                                    Colors.black54,
-                                    BlendMode.darken,
-                                  )
-                                : const ColorFilter.mode(
-                                    Colors.transparent,
-                                    BlendMode.dst,
-                                  ),
-                            child: Image.file(
-                              File(img.imagePath),
-                              fit: BoxFit.cover,
-                            ),
-                          ),
-                        ),
-                        Positioned(
-                          top: 8,
-                          right: 8,
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 6,
-                              vertical: 2,
-                            ),
-                            decoration: BoxDecoration(
-                              color: badgeColor,
-                              borderRadius: BorderRadius.circular(4),
-                            ),
-                            child: Text(
-                              badgeText,
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 8,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ),
-                        ),
-                      ],
+              Positioned(
+                top: 8,
+                right: 8,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 6,
+                    vertical: 2,
+                  ),
+                  decoration: BoxDecoration(
+                    color: badgeColor,
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Text(
+                    badgeText,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 8,
+                      fontWeight: FontWeight.bold,
                     ),
                   ),
-                );
-              },
-            ),
+                ),
+              ),
+              if (_isHovered)
+                Positioned(
+                  top: 8,
+                  left: 8,
+                  child: GestureDetector(
+                    onTap: () => widget.onRemove(),
+                    behavior: HitTestBehavior.opaque,
+                    child: Container(
+                      padding: const EdgeInsets.all(6),
+                      decoration: BoxDecoration(
+                        color: Colors.black54,
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: const Icon(
+                        Icons.delete_outline,
+                        color: Colors.redAccent,
+                        size: 20,
+                      ),
+                    ),
+                  ),
+                ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }
