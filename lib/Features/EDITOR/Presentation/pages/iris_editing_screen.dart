@@ -11,6 +11,8 @@ import 'package:flutter_gap/flutter_gap.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter_svg/svg.dart';
 import 'package:go_router/go_router.dart';
+import 'package:iris_designer/Features/EDITOR/Domain/entities/circling_params.dart';
+import 'package:iris_designer/Features/EDITOR/Domain/services/color_adjustment_dart.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
 
@@ -34,28 +36,6 @@ import 'package:iris_designer/Features/PROJECT_HUB/Presentation/bloc/project_hub
 
 import 'package:iris_designer/Features/EDITOR/Presentation/widgets/queue_image_item.dart';
 
-// FIXED: Added a parameter class for Isolate processing to prevent UI lag
-class CirclingParams {
-  final String inputPath;
-  final String outputPath;
-  final double outerRadiusVal;
-  final double innerRadiusVal;
-  final double ovalRatio;
-  final Offset outerOffset;
-  final Offset innerOffset;
-  final Size viewSize;
-
-  CirclingParams({
-    required this.inputPath,
-    required this.outputPath,
-    required this.outerRadiusVal,
-    required this.innerRadiusVal,
-    required this.ovalRatio,
-    required this.outerOffset,
-    required this.innerOffset,
-    required this.viewSize,
-  });
-}
 
 class IrisEditingScreen extends StatefulWidget {
   final Map<String, dynamic> extra;
@@ -86,7 +66,16 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
   double _brightness = 0.0;
   double _contrast = 0.0;
   double _saturation = 0.0;
-  double _hue = 0.0;
+  double _vibrance = 0.0;
+  ColorPreset? _selectedPreset;
+
+  /// Buffered brush strokes for flash step; sent to Photopea only on Apply.
+  final List<List<Map<String, double>>> _flashStrokes = [];
+  bool _showPhotopeaForFlash = false;
+
+  /// For each image index, path of the cut+flash image (before any color apply).
+  /// Used by Color step Reset to restore the image to that state.
+  final Map<int, String> _pathAfterFlash = {};
 
   Timer? _readinessTimer;
 
@@ -121,13 +110,13 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
   IrisImage get _activeImage => _projectImages[_selectedImageIndex];
   bool get _allImagesDone => _projectImages.every((img) => img.isFullyEdited);
 
-  Future<void> _switchImage(int index) async {
+  void _switchImage(int index) {
     setState(() {
       _selectedImageIndex = index;
       _currentStep = 0;
       _resetTools();
     });
-    await PhotopeaService().loadImage(_projectImages[index].imagePath);
+    // Photopea is only used for flash correction; no need to load on switch.
   }
 
   void _removeImageFromQueue(int index) {
@@ -156,11 +145,6 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
     );
     HiveService.removeImageFromSession(_session.id, removedPath);
 
-    if (_projectImages.isNotEmpty) {
-      PhotopeaService().loadImage(
-        _projectImages[_selectedImageIndex].imagePath,
-      );
-    }
   }
 
   void _resetTools() {
@@ -172,7 +156,25 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
     _brightness = 0.0;
     _contrast = 0.0;
     _saturation = 0.0;
-    _hue = 0.0;
+    _vibrance = 0.0;
+    _selectedPreset = null;
+  }
+
+  void _resetColorAdjustments() {
+    setState(() {
+      _brightness = 0.0;
+      _contrast = 0.0;
+      _saturation = 0.0;
+      _vibrance = 0.0;
+      _selectedPreset = null;
+      final pathAfterFlash = _pathAfterFlash[_selectedImageIndex];
+      if (pathAfterFlash != null) {
+        _projectImages[_selectedImageIndex] = _activeImage.copyWith(
+          imagePath: pathAfterFlash,
+          isColorDone: false,
+        );
+      }
+    });
   }
 
   // FIXED: Moved the logic to a static function for Compute (Background Isolate)
@@ -277,8 +279,14 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
 
   void _handleEditingResult(String newPath) {
     if (!mounted) return;
+    final wasFlashStep = _currentStep == 1;
     setState(() {
       _isProcessing = false;
+      if (wasFlashStep) {
+        _showPhotopeaForFlash = false;
+        _flashStrokes.clear();
+        _pathAfterFlash[_selectedImageIndex] = newPath;
+      }
       IrisImage updated = _activeImage.copyWith(imagePath: newPath);
       if (_currentStep == 0) updated = updated.copyWith(isCirclingDone: true);
       if (_currentStep == 1) updated = updated.copyWith(isFlashDone: true);
@@ -286,13 +294,14 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
       _projectImages[_selectedImageIndex] = updated;
       if (_currentStep < 2) {
         _currentStep++;
+        if (_currentStep == 1) _flashStrokes.clear();
         if (_currentStep == 2) _resetTools();
       }
     });
     ToastService.showSuccess(
       context,
-      title: "Success",
-      message: "Step Applied.",
+      title: "Progress saved",
+      message: "Step applied.",
     );
   }
 
@@ -316,18 +325,72 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
       }
 
       if (_currentStep == 2) {
-        await PhotopeaService().adjustColor(
-          brightness: _brightness,
-          contrast: _contrast,
-          saturation: _saturation,
-          hue: _hue,
+        _pathAfterFlash[_selectedImageIndex] ??= _activeImage.imagePath;
+        final newPath = await applyColorAdjustmentDart(
+          inputPath: _activeImage.imagePath,
+          params: ColorAdjustParams(
+            brightness: _brightness,
+            contrast: _contrast,
+            saturation: _saturation,
+            vibrance: _vibrance,
+            preset: _selectedPreset,
+          ),
         );
-        await Future.delayed(const Duration(milliseconds: 1000));
+        setState(() => _isProcessing = false);
+        if (newPath != null && mounted) {
+          _handleEditingResult(newPath);
+        } else if (mounted) {
+          ToastService.showError(
+            context,
+            title: "Error",
+            message: "Failed to apply color adjustment",
+          );
+        }
+        return;
       }
 
+      if (_currentStep == 1) {
+        setState(() {
+          _isProcessing = true;
+          _showPhotopeaForFlash = true;
+        });
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _runFlashApplyWithPhotopea();
+        });
+        return;
+      }
+    } catch (e) {
+      setState(() {
+        _isProcessing = false;
+        _showPhotopeaForFlash = false;
+      });
+    }
+  }
+
+  /// Starts Photopea only on Apply: load image, replay buffered strokes, export.
+  Future<void> _runFlashApplyWithPhotopea() async {
+    if (!mounted) return;
+    final path = _activeImage.imagePath;
+    final strokes = List<List<Map<String, double>>>.from(_flashStrokes);
+    try {
+      await PhotopeaService().loadImage(path);
+      if (!mounted) return;
+      for (final s in strokes) {
+        await PhotopeaService().correctFlashAtPoints(s, 20.0);
+        if (!mounted) return;
+      }
       await PhotopeaService().exportImage();
     } catch (e) {
-      setState(() => _isProcessing = false);
+      if (!mounted) return;
+      setState(() {
+        _isProcessing = false;
+        _showPhotopeaForFlash = false;
+      });
+      ToastService.showError(
+        context,
+        title: "Error",
+        message: "Flash correction failed",
+      );
     }
   }
 
@@ -340,7 +403,12 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
       await File(newPath).writeAsBytes(bytes);
       if (mounted) _handleEditingResult(newPath);
     } catch (e) {
-      setState(() => _isProcessing = false);
+      if (mounted) {
+        setState(() {
+          _isProcessing = false;
+          _showPhotopeaForFlash = false;
+        });
+      }
     }
   }
 
@@ -380,12 +448,21 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
         false;
 
     if (shouldLeave) {
-      final uneditedPaths = _projectImages.map((e) => e.originalPath).toList();
-      await HiveService.updateSessionImages(_session.id, uneditedPaths);
+      // Always pass original raw images to screen 1. Use Hive's importedPhotos
+      // so that we never send edited paths when the editor was opened from screen 2.
+      final rawPaths = HiveService.getSessionById(_session.id)?.importedPhotos ??
+          _projectImages.map((e) => e.originalPath).toList();
+      await HiveService.updateSessionImages(_session.id, rawPaths);
+      if (!mounted) return;
+      ToastService.showSuccess(
+        context,
+        title: "Progress saved",
+        message: "Session updated.",
+      );
       if (!mounted) return;
       context.goNamed(
         'image-prep',
-        extra: {'session': _session, 'returnedImages': uneditedPaths},
+        extra: {'session': _session, 'returnedImages': rawPaths},
       );
     }
   }
@@ -414,10 +491,12 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
 
   void _skipCurrentStep() {
     setState(() {
-      if (_currentStep == 1)
+      if (_currentStep == 1) {
+        _pathAfterFlash[_selectedImageIndex] = _activeImage.imagePath;
         _projectImages[_selectedImageIndex] = _activeImage.copyWith(
           isFlashDone: true,
         );
+      }
       if (_currentStep == 2)
         _projectImages[_selectedImageIndex] = _activeImage.copyWith(
           isColorDone: true,
@@ -467,8 +546,15 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
                     _session.id,
                     paths,
                   );
-                  context.go(
-                    '/image-prep-2',
+                  if (!mounted) return;
+                  ToastService.showSuccess(
+                    context,
+                    title: "Progress saved",
+                    message: "Ready for art studio.",
+                  );
+                  if (!mounted) return;
+                  context.goNamed(
+                    'image-prep-2',
                     extra: {'session': _session, 'imageUrls': paths},
                   );
                 }
@@ -479,23 +565,7 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
         body: Stack(
           children: [
             Positioned.fill(
-              child: InAppWebView(
-                initialUrlRequest: URLRequest(url: WebUri(photopeaUrl)),
-                initialSettings: InAppWebViewSettings(
-                  javaScriptEnabled: true,
-                  domStorageEnabled: true,
-                ),
-                onWebViewCreated: (c) => PhotopeaService().setController(c),
-                onConsoleMessage: (c, msg) {
-                  final message = msg.message;
-                  if (message.startsWith("FLUTTER_IMAGE_DATA:")) {
-                    final base64Data = message.substring(
-                      "FLUTTER_IMAGE_DATA:".length,
-                    );
-                    PhotopeaService().onSaveResult?.call(base64Data);
-                  }
-                },
-              ),
+              child: Container(color: const Color(0xFF12151B)),
             ),
             Positioned.fill(
               child: Container(
@@ -520,12 +590,7 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
                                     ),
                                     child: ClipRRect(
                                       borderRadius: BorderRadius.circular(16),
-                                      child: _isProcessing
-                                          ? const Center(
-                                              child:
-                                                  CircularProgressIndicator(),
-                                            )
-                                          : _buildEditorView(),
+                                      child: _buildEditorView(),
                                     ),
                                   ),
                                 ),
@@ -568,9 +633,38 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
           onLayoutSize: (s) => _circlingViewSize = s,
         );
       case 1:
-        return FlashCorrectionView(
-          activeImage: _activeImage,
-          onBrushStroke: (p) => PhotopeaService().correctFlashAtPoints(p, 20.0),
+        return Stack(
+          fit: StackFit.expand,
+          children: [
+            if (_showPhotopeaForFlash)
+              Positioned.fill(
+                child: InAppWebView(
+                  initialUrlRequest: URLRequest(url: WebUri(photopeaUrl)),
+                  initialSettings: InAppWebViewSettings(
+                    javaScriptEnabled: true,
+                    domStorageEnabled: true,
+                  ),
+                  onWebViewCreated: (c) => PhotopeaService().setController(c),
+                  onLoadStop: (controller, url) async {
+                    await Future.delayed(const Duration(seconds: 2));
+                    PhotopeaService().setReady();
+                  },
+                  onConsoleMessage: (c, msg) {
+                    final message = msg.message;
+                    if (message.startsWith("FLUTTER_IMAGE_DATA:")) {
+                      final base64Data = message.substring(
+                        "FLUTTER_IMAGE_DATA:".length,
+                      );
+                      PhotopeaService().onSaveResult?.call(base64Data);
+                    }
+                  },
+                ),
+              ),
+            FlashCorrectionView(
+              activeImage: _activeImage,
+              onBrushStroke: (p) => setState(() => _flashStrokes.add(p)),
+            ),
+          ],
         );
       case 2:
         return ColorAdjustmentView(
@@ -578,13 +672,24 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
           brightness: _brightness,
           contrast: _contrast,
           saturation: _saturation,
-          hue: _hue,
-          onAdjustmentChanged: (b, c, s, h) => setState(() {
+          vibrance: _vibrance,
+          selectedPreset: _selectedPreset,
+          onAdjustmentChanged: (b, c, s, v) => setState(() {
             _brightness = b;
             _contrast = c;
             _saturation = s;
-            _hue = h;
+            _vibrance = v;
           }),
+          onPresetSelected: (p) => setState(() {
+            _selectedPreset = p;
+            if (p != null) {
+              _brightness = p.brightness;
+              _contrast = p.contrast;
+              _saturation = p.saturation;
+              _vibrance = p.vibrance;
+            }
+          }),
+          onReset: _resetColorAdjustments,
         );
       default:
         return const SizedBox();
@@ -708,7 +813,14 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
         : Colors.grey;
 
     return InkWell(
-      onTap: !isLocked ? () => setState(() => _currentStep = index) : null,
+      onTap: !isLocked
+          ? () {
+              setState(() {
+                _currentStep = index;
+                if (index == 1) _flashStrokes.clear();
+              });
+            }
+          : null,
       child: Column(
         children: [
           Row(
@@ -735,11 +847,7 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
           Container(
             height: 2,
             width: 200,
-            color: isActive
-                ? Colors.blueAccent
-                : isDone
-                ? Colors.green
-                : Colors.transparent,
+            color: isActive ? Colors.blueAccent : Colors.transparent,
           ),
         ],
       ),
@@ -801,25 +909,6 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
             const Gap(16),
           ],
 
-          if (_currentStep == 2) ...[
-            Expanded(
-              child: _buildSimpleSlider(
-                label: "Brightness",
-                value: _brightness / 100,
-                onChanged: (val) => setState(() => _brightness = val * 100),
-              ),
-            ),
-            const Gap(16),
-            Expanded(
-              child: _buildSimpleSlider(
-                label: "Contrast",
-                value: _contrast / 100,
-                onChanged: (val) => setState(() => _contrast = val * 100),
-              ),
-            ),
-            const Gap(16),
-          ],
-
           if (_currentStep > 0) ...[
             const Spacer(),
             TextButton(
@@ -836,7 +925,7 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
           ],
 
           ElevatedButton.icon(
-            onPressed: _applyCurrentStep,
+            onPressed: _isProcessing ? null : _applyCurrentStep,
             style: ElevatedButton.styleFrom(
               backgroundColor: Colors.blueAccent,
               foregroundColor: Colors.white,

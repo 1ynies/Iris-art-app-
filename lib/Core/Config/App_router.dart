@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart'; // ✅ Corrected Import name if needed
+import 'package:iris_designer/Core/Services/hive_service.dart';
 import 'package:iris_designer/Features/ART_STUDIO/Presentation/pages/iris_studio_screen.dart';
 import 'package:iris_designer/Features/EDITOR/Domain/usecases/save_image_progress_usecase.dart';
 import 'package:iris_designer/Features/EDITOR/Presentation/bloc/editor_bloc.dart';
@@ -89,7 +90,7 @@ class AppRouter {
         },
       ),
 
-      // === IMAGE PREP 2 (WORKSPACE) ===
+      // === IMAGE PREP 2 (WORKSPACE) — edited images only, from nav or Hive ===
       GoRoute(
         path: '/image-prep-2',
         name: 'image-prep-2',
@@ -100,24 +101,30 @@ class AppRouter {
           if (state.extra is Map<String, dynamic>) {
              final map = state.extra as Map<String, dynamic>;
              session = map['session'] as ClientSession;
-             if (map['imageUrls'] != null) {
+             if (map['imageUrls'] != null && (map['imageUrls'] as List).isNotEmpty) {
                imageUrls = (map['imageUrls'] as List).map((e) => e.toString()).toList();
              }
           } else if (state.extra is ClientSession) {
             session = state.extra as ClientSession;
           } else {
             session = ClientSession(
-              id: '0', 
-              clientName: 'Unknown', 
-              email: '', 
+              id: '0',
+              clientName: 'Unknown',
+              email: '',
               country: '',
-              createdAt: DateTime.now(), // ✅ Fixed: Added required field
+              createdAt: DateTime.now(),
             );
           }
 
+          // When no edited URLs from nav, use Hive (session.generatedArt)
+          if (imageUrls.isEmpty) {
+            final fromHive = HiveService.getSessionById(session.id);
+            imageUrls = fromHive?.generatedArt ?? session.generatedArt;
+          }
+
           return ImagePrepScreen2(
-            session: session, 
-            imageUrls: imageUrls, 
+            session: session,
+            imageUrls: imageUrls,
           );
         },
       ),
