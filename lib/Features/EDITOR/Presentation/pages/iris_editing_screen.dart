@@ -1,25 +1,17 @@
-import 'dart:async';
-import 'dart:convert';
-import 'dart:io';
 import 'package:dotted_border/dotted_border.dart';
-import 'package:image/image.dart' as img;
 import 'package:file_picker/file_picker.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_gap/flutter_gap.dart';
-import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter_svg/svg.dart';
 import 'package:go_router/go_router.dart';
-import 'package:iris_designer/Features/EDITOR/Domain/entities/circling_params.dart';
 import 'package:iris_designer/Features/EDITOR/Domain/services/color_adjustment_dart.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
 
 // Core Imports
 import 'package:iris_designer/Core/Config/dependecy_injection.dart';
 import 'package:iris_designer/Core/Services/hive_service.dart';
-import 'package:iris_designer/Core/Services/photopea_service.dart';
+import 'package:iris_designer/Core/Services/iris_engine_service.dart';
 import 'package:iris_designer/Core/Shared/Widgets/global_custom_navbar.dart';
 import 'package:iris_designer/Core/Shared/Widgets/global_submit_button_widget.dart';
 import 'package:iris_designer/Core/Utils/toast_service.dart';
@@ -47,7 +39,6 @@ class IrisEditingScreen extends StatefulWidget {
 }
 
 class _IrisEditingScreenState extends State<IrisEditingScreen> {
-  final String photopeaUrl = 'https://www.photopea.com';
   bool _isProcessing = false;
 
   late ClientSession _session;
@@ -60,7 +51,6 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
   double _ovalRatio = 1.0;
   Offset _outerCircleOffset = Offset.zero;
   Offset _innerCircleOffset = Offset.zero;
-
   Size? _circlingViewSize;
 
   double _brightness = 0.0;
@@ -69,15 +59,8 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
   double _vibrance = 0.0;
   ColorPreset? _selectedPreset;
 
-  /// Buffered brush strokes for flash step; sent to Photopea only on Apply.
-  final List<List<Map<String, double>>> _flashStrokes = [];
-  bool _showPhotopeaForFlash = false;
-
-  /// For each image index, path of the cut+flash image (before any color apply).
-  /// Used by Color step Reset to restore the image to that state.
+  /// For each image index, path after flash (before color). Used by Color step Reset.
   final Map<int, String> _pathAfterFlash = {};
-
-  Timer? _readinessTimer;
 
   @override
   void initState() {
@@ -95,16 +78,6 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
         isColorDone: isProcessed,
       );
     }).toList();
-
-    PhotopeaService().onSaveResult = (base64Data) {
-      _handlePhotopeaResult(base64Data);
-    };
-  }
-
-  @override
-  void dispose() {
-    _readinessTimer?.cancel();
-    super.dispose();
   }
 
   IrisImage get _activeImage => _projectImages[_selectedImageIndex];
@@ -177,116 +150,12 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
     });
   }
 
-  // FIXED: Moved the logic to a static function for Compute (Background Isolate)
-  // This prevents the application from "stopping responding" during processing.
-  static Future<void> _processImageInIsolate(CirclingParams params) async {
-    final bytes = await File(params.inputPath).readAsBytes();
-    img.Image? decoded = img.decodeImage(bytes);
-    if (decoded == null) return;
-
-    final w = decoded.width.toDouble();
-    final h = decoded.height.toDouble();
-    final vw = params.viewSize.width;
-    final vh = params.viewSize.height;
-
-    final scale = (vw / w) < (vh / h) ? (vw / w) : (vh / h);
-    final shortestSide = vw < vh ? vw : vh;
-
-    // Map UI coordinates to actual Image pixels
-    final cxOuter = (w / 2) + (vw * params.outerOffset.dx / scale);
-    final cyOuter = (h / 2) + (vh * params.outerOffset.dy / scale);
-    final cxInner = (w / 2) + (vw * params.innerOffset.dx / scale);
-    final cyInner = (h / 2) + (vh * params.innerOffset.dy / scale);
-
-    final rx = (params.outerRadiusVal * (shortestSide / 2)) / scale;
-    final ry =
-        (params.outerRadiusVal * (shortestSide / 2) * params.ovalRatio) / scale;
-    final rix = (params.innerRadiusVal * (shortestSide / 2)) / scale;
-    final riy = (params.innerRadiusVal * (shortestSide / 2)) / scale;
-
-    // CHANGED: Logic to cut specifically according to the BIG circle (Outer Ellipse)
-    // We create a new image that is only as large as the outer bounds to ensure "Center Fitting"
-    int cropLeft = (cxOuter - rx).floor().clamp(0, decoded.width);
-    int cropTop = (cyOuter - ry).floor().clamp(0, decoded.height);
-    int cropWidth = (rx * 2).ceil().clamp(0, decoded.width - cropLeft);
-    int cropHeight = (ry * 2).ceil().clamp(0, decoded.height - cropTop);
-
-    img.Image out = img.Image(
-      width: cropWidth,
-      height: cropHeight,
-      numChannels: 4,
-    );
-
-    // Fill background with transparent
-    out.clear(img.ColorRgba8(0, 0, 0, 0));
-
-    for (int y = 0; y < cropHeight; y++) {
-      for (int x = 0; x < cropWidth; x++) {
-        // Global coordinates in original image
-        double globalX = (cropLeft + x).toDouble();
-        double globalY = (cropTop + y).toDouble();
-
-        // Check Outer Ellipse
-        double uO = (globalX - cxOuter) / rx;
-        double vO = (globalY - cyOuter) / ry;
-        bool isInsideOuter = (uO * uO + vO * vO) <= 1.0;
-
-        // Check Inner Circle
-        double uI = (globalX - cxInner) / rix;
-        double vI = (globalY - cyInner) / riy;
-        bool isInsideInner = (uI * uI + vI * vI) < 1.0;
-
-        if (isInsideOuter && !isInsideInner) {
-          var pixel = decoded.getPixel(cropLeft + x, cropTop + y);
-          out.setPixel(x, y, pixel);
-        }
-      }
-    }
-
-    final png = img.encodePng(out);
-    await File(params.outputPath).writeAsBytes(png);
-  }
-
-  // FIXED: Updated to use Compute for non-blocking UI
-  Future<String?> _applyCirclingInDart() async {
-    final path = _activeImage.imagePath;
-    if (!await File(path).exists() || _circlingViewSize == null) return null;
-
-    final tempDir = await getTemporaryDirectory();
-    final newPath =
-        '${tempDir.path}/edited_${DateTime.now().millisecondsSinceEpoch}.png';
-
-    try {
-      await compute(
-        _processImageInIsolate,
-        CirclingParams(
-          inputPath: path,
-          outputPath: newPath,
-          outerRadiusVal: _outerRadiusVal,
-          innerRadiusVal: _innerRadiusVal,
-          ovalRatio: _ovalRatio,
-          outerOffset: _outerCircleOffset,
-          innerOffset: _innerCircleOffset,
-          viewSize: _circlingViewSize!,
-        ),
-      );
-      return newPath;
-    } catch (e) {
-      debugPrint("Processing Error: $e");
-      return null;
-    }
-  }
-
   void _handleEditingResult(String newPath) {
     if (!mounted) return;
     final wasFlashStep = _currentStep == 1;
     setState(() {
       _isProcessing = false;
-      if (wasFlashStep) {
-        _showPhotopeaForFlash = false;
-        _flashStrokes.clear();
-        _pathAfterFlash[_selectedImageIndex] = newPath;
-      }
+      if (wasFlashStep) _pathAfterFlash[_selectedImageIndex] = newPath;
       IrisImage updated = _activeImage.copyWith(imagePath: newPath);
       if (_currentStep == 0) updated = updated.copyWith(isCirclingDone: true);
       if (_currentStep == 1) updated = updated.copyWith(isFlashDone: true);
@@ -294,7 +163,6 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
       _projectImages[_selectedImageIndex] = updated;
       if (_currentStep < 2) {
         _currentStep++;
-        if (_currentStep == 1) _flashStrokes.clear();
         if (_currentStep == 2) _resetTools();
       }
     });
@@ -309,32 +177,85 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
     setState(() => _isProcessing = true);
     try {
       if (_currentStep == 0) {
-        final newPath = await _applyCirclingInDart();
+        String? newPath;
+        if (IrisEngineService.isCutAndWarpAvailable && _circlingViewSize != null) {
+          final sz = _circlingViewSize!;
+          final safeOuterR = _outerRadiusVal.clamp(0.0, 1.0);
+          final maxInner = safeOuterR > 0.01 ? safeOuterR - 0.01 : safeOuterR;
+          final safeInnerR = _innerRadiusVal.clamp(0.0, maxInner);
+          newPath = await IrisEngineService.processCirclingWithViewParams(
+            _activeImage.imagePath,
+            viewW: sz.width,
+            viewH: sz.height,
+            outerR: safeOuterR,
+            innerR: safeInnerR,
+            outerDx: _outerCircleOffset.dx,
+            outerDy: _outerCircleOffset.dy,
+            innerDx: _innerCircleOffset.dx,
+            innerDy: _innerCircleOffset.dy,
+          );
+        }
+        if (newPath == null && IrisEngineService.isAvailable) {
+          newPath = await IrisEngineService.processCircling(_activeImage.imagePath);
+        }
         if (newPath != null && mounted) {
           _handleEditingResult(newPath);
         } else {
           setState(() => _isProcessing = false);
-          if (mounted)
+          if (mounted) {
+            String message;
+            if (!IrisEngineService.isAvailable) {
+              message = "Iris Engine not available. Ensure iris_engine.dll is next to the exe.";
+            } else if (!IrisEngineService.isOpenCvAvailable) {
+              message = "Iris Engine built without OpenCV. Set OpenCV_DIR and rebuild.";
+            } else if (!IrisEngineService.isCutAndWarpAvailable) {
+              message = "Iris Engine DLL is out of date. Rebuild the Windows app.";
+            } else if (_circlingViewSize == null) {
+              message = "Layout not ready yet. Try again in a second.";
+            } else {
+              message = "Could not complete circling. Adjust the circles and try again.";
+            }
+            ToastService.showError(
+              context,
+              title: "Circling failed",
+              message: message,
+            );
+          }
+        }
+        return;
+      }
+
+      if (_currentStep == 1) {
+        final newPath = await IrisEngineService.processFlashRemoval(
+          _activeImage.imagePath,
+          threshold: 0.95,
+          dilatePixels: 3,
+        );
+        if (newPath != null && mounted) {
+          _handleEditingResult(newPath);
+        } else {
+          setState(() => _isProcessing = false);
+          if (mounted) {
             ToastService.showError(
               context,
               title: "Error",
-              message: "Failed to apply circling",
+              message: IrisEngineService.isAvailable
+                  ? "Flash correction failed (Iris Engine)"
+                  : "Iris Engine not available. Run on Windows with iris_engine.dll.",
             );
+          }
         }
         return;
       }
 
       if (_currentStep == 2) {
         _pathAfterFlash[_selectedImageIndex] ??= _activeImage.imagePath;
-        final newPath = await applyColorAdjustmentDart(
-          inputPath: _activeImage.imagePath,
-          params: ColorAdjustParams(
-            brightness: _brightness,
-            contrast: _contrast,
-            saturation: _saturation,
-            vibrance: _vibrance,
-            preset: _selectedPreset,
-          ),
+        final newPath = await IrisEngineService.processColorEffects(
+          _activeImage.imagePath,
+          brightness: _brightness,
+          contrast: _contrast,
+          saturation: _saturation,
+          vibrance: _vibrance,
         );
         setState(() => _isProcessing = false);
         if (newPath != null && mounted) {
@@ -343,71 +264,17 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
           ToastService.showError(
             context,
             title: "Error",
-            message: "Failed to apply color adjustment",
+            message: IrisEngineService.isAvailable
+                ? "Color adjustment failed (Iris Engine)"
+                : "Iris Engine not available. Run on Windows with iris_engine.dll.",
           );
         }
         return;
       }
-
-      if (_currentStep == 1) {
-        setState(() {
-          _isProcessing = true;
-          _showPhotopeaForFlash = true;
-        });
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          _runFlashApplyWithPhotopea();
-        });
-        return;
-      }
     } catch (e) {
-      setState(() {
-        _isProcessing = false;
-        _showPhotopeaForFlash = false;
-      });
-    }
-  }
-
-  /// Starts Photopea only on Apply: load image, replay buffered strokes, export.
-  Future<void> _runFlashApplyWithPhotopea() async {
-    if (!mounted) return;
-    final path = _activeImage.imagePath;
-    final strokes = List<List<Map<String, double>>>.from(_flashStrokes);
-    try {
-      await PhotopeaService().loadImage(path);
-      if (!mounted) return;
-      for (final s in strokes) {
-        await PhotopeaService().correctFlashAtPoints(s, 20.0);
-        if (!mounted) return;
-      }
-      await PhotopeaService().exportImage();
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _isProcessing = false;
-        _showPhotopeaForFlash = false;
-      });
-      ToastService.showError(
-        context,
-        title: "Error",
-        message: "Flash correction failed",
-      );
-    }
-  }
-
-  Future<void> _handlePhotopeaResult(String base64Data) async {
-    try {
-      final bytes = base64Decode(base64Data);
-      final tempDir = await getTemporaryDirectory();
-      final newPath =
-          '${tempDir.path}/edited_${DateTime.now().millisecondsSinceEpoch}.png';
-      await File(newPath).writeAsBytes(bytes);
-      if (mounted) _handleEditingResult(newPath);
-    } catch (e) {
+      setState(() => _isProcessing = false);
       if (mounted) {
-        setState(() {
-          _isProcessing = false;
-          _showPhotopeaForFlash = false;
-        });
+        ToastService.showError(context, title: "Error", message: e.toString());
       }
     }
   }
@@ -630,41 +497,14 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
           onInnerRadiusChange: (v) =>
               setState(() => _innerRadiusVal = v.clamp(0.0, _outerRadiusVal)),
           onOvalRatioChange: (ratio) => setState(() => _ovalRatio = ratio),
-          onLayoutSize: (s) => _circlingViewSize = s,
+          onLayoutSize: (s) => WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) setState(() => _circlingViewSize = s);
+          }),
         );
       case 1:
-        return Stack(
-          fit: StackFit.expand,
-          children: [
-            if (_showPhotopeaForFlash)
-              Positioned.fill(
-                child: InAppWebView(
-                  initialUrlRequest: URLRequest(url: WebUri(photopeaUrl)),
-                  initialSettings: InAppWebViewSettings(
-                    javaScriptEnabled: true,
-                    domStorageEnabled: true,
-                  ),
-                  onWebViewCreated: (c) => PhotopeaService().setController(c),
-                  onLoadStop: (controller, url) async {
-                    await Future.delayed(const Duration(seconds: 2));
-                    PhotopeaService().setReady();
-                  },
-                  onConsoleMessage: (c, msg) {
-                    final message = msg.message;
-                    if (message.startsWith("FLUTTER_IMAGE_DATA:")) {
-                      final base64Data = message.substring(
-                        "FLUTTER_IMAGE_DATA:".length,
-                      );
-                      PhotopeaService().onSaveResult?.call(base64Data);
-                    }
-                  },
-                ),
-              ),
-            FlashCorrectionView(
-              activeImage: _activeImage,
-              onBrushStroke: (p) => setState(() => _flashStrokes.add(p)),
-            ),
-          ],
+        return FlashCorrectionView(
+          activeImage: _activeImage,
+          onBrushStroke: null,
         );
       case 2:
         return ColorAdjustmentView(
@@ -813,14 +653,7 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
         : Colors.grey;
 
     return InkWell(
-      onTap: !isLocked
-          ? () {
-              setState(() {
-                _currentStep = index;
-                if (index == 1) _flashStrokes.clear();
-              });
-            }
-          : null,
+      onTap: !isLocked ? () => setState(() => _currentStep = index) : null,
       child: Column(
         children: [
           Row(
@@ -890,13 +723,8 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
                 label: "Shape",
                 value: (_ovalRatio - 0.5),
                 overrideDisplay: _ovalRatio == 1.0 ? "Circle" : "Oval",
-                showReset: true, // Only show for this slider
-                onReset: () {
-                  setState(() {
-                    _ovalRatio =
-                        1.0; // Sets the slider back to the "Circle" position
-                  });
-                },
+                showReset: true,
+                onReset: () => setState(() => _ovalRatio = 1.0),
                 onChanged: (val) => setState(() => _ovalRatio = 0.5 + val),
               ),
             ),
@@ -942,9 +770,9 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
   Widget _buildSimpleSlider({
     required String label,
     required double value,
-    required Function(double) onChanged,
+    required void Function(double) onChanged,
     String? overrideDisplay,
-    bool showReset = false, // Control visibility
+    bool showReset = false,
     VoidCallback? onReset,
   }) {
     return Container(
@@ -972,8 +800,7 @@ class _IrisEditingScreenState extends State<IrisEditingScreen> {
                       fontSize: 12,
                     ),
                   ),
-
-                  if (showReset) ...[
+                  if (showReset && onReset != null) ...[
                     const SizedBox(width: 8),
                     GestureDetector(
                       onTap: onReset,

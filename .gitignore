@@ -33,6 +33,9 @@ migrate_working_dir/
 /build/
 /coverage/
 
+# vcpkg (used by build_with_opencv.ps1 for OpenCV)
+.vcpkg/
+
 # Symbolication related
 app.*.symbols
 
