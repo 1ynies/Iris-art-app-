@@ -1,7 +1,7 @@
 /**
  * Phase 1: Circling & Cutting — Radial warp and alpha mask (2026).
  * User-defined iris/pupil circles, 50% pupil shrink via radial stretch.
- * Only built when IRIS_ENGINE_OPENCV_AVAILABLE.
+ * Requires OpenCV.
  */
 
 #ifndef IRIS_ENGINE_IRIS_CUT_H

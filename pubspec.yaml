@@ -1,5 +1,5 @@
 name: iris_designer
-description: "A sophisticated Flutter application that transforms iris images into stunning artistic creations using advanced image processing and computer vision techniques."
+description: "A sophisticated Flutter application that transforms iris images into stunning artistic creations using advanced image processing and computer vision techniques. Windows only."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
@@ -76,7 +76,6 @@ dependencies:
   
   flutter_inappwebview: ^6.1.5
   flutter_inappwebview_windows: ^0.6.0
-  flutter_inappwebview_macos: ^1.1.2
 
 
 
@@ -118,8 +117,8 @@ dev_dependencies:
 # following page: https://dart.dev/tools/pub/pubspec
 
 # The following section is specific to Flutter packages.
+# (App is Windows-only by design; "platforms" is not used for older Flutter compat.)
 flutter:
-
   # The following line ensures that the Material Icons font is
   # included with your application, so that you can use the icons in
   # the material Icons class.
@@ -156,8 +155,8 @@ flutter:
   # For details regarding fonts from package dependencies,
   # see https://flutter.dev/to/font-from-package
 flutter_launcher_icons:
-  android: true
-  ios: true
+  android: false
+  ios: false
   windows:
     generate: true
     image_path: "assets/icon.png"

@@ -367,7 +367,7 @@ packages:
     source: hosted
     version: "1.1.2"
   flutter_inappwebview_macos:
-    dependency: "direct main"
+    dependency: transitive
     description:
       name: flutter_inappwebview_macos
       sha256: c1fbb86af1a3738e3541364d7d1866315ffb0468a1a77e34198c9be571287da1

@@ -1,6 +1,6 @@
 /**
  * Iris Engine — Core implementation.
- * Phase 2–4 require OpenCV (IRIS_ENGINE_OPENCV_AVAILABLE).
+ * Phase 2–4 require OpenCV.
  */
 
 #include "iris_engine.h"
@@ -8,11 +8,9 @@
 #include <cmath>
 #include <cstring>
 
-#if defined(IRIS_ENGINE_OPENCV_AVAILABLE)
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 #include <opencv2/photo.hpp>
-#endif
 
 namespace iris {
 
@@ -46,7 +44,6 @@ bool IrisObject::get_rgba(std::vector<uint8_t>& out) const {
 }
 
 bool IrisObject::detect_iris_and_pupil(CircleResult& iris, CircleResult& pupil) {
-#if defined(IRIS_ENGINE_OPENCV_AVAILABLE)
   if (rgba_.empty() || width_ <= 0 || height_ <= 0) return false;
   cv::Mat mat_rgba(height_, width_, CV_8UC4, rgba_.data());
   cv::Mat gray;
@@ -86,15 +83,9 @@ bool IrisObject::detect_iris_and_pupil(CircleResult& iris, CircleResult& pupil) 
   iris_circle_ = iris;
   pupil_circle_ = pupil;
   return true;
-#else
-  (void)iris;
-  (void)pupil;
-  return false;
-#endif
 }
 
 bool IrisObject::cut_iris_to_alpha(float iris_radius_scale) {
-#if defined(IRIS_ENGINE_OPENCV_AVAILABLE)
   CircleResult ir, pu;
   if (!detect_iris_and_pupil(ir, pu)) return false;
   float cx = ir.center_x;
@@ -116,14 +107,9 @@ bool IrisObject::cut_iris_to_alpha(float iris_radius_scale) {
     }
   }
   return true;
-#else
-  (void)iris_radius_scale;
-  return false;
-#endif
 }
 
 bool IrisObject::remove_flash(const FlashRemovalParams& params) {
-#if defined(IRIS_ENGINE_OPENCV_AVAILABLE)
   if (rgba_.empty() || width_ <= 0 || height_ <= 0) return false;
   cv::Mat mat_rgba(height_, width_, CV_8UC4, rgba_.data());
   cv::Mat bgr;
@@ -151,14 +137,9 @@ bool IrisObject::remove_flash(const FlashRemovalParams& params) {
   std::memcpy(rgba_.data(), out_rgba.data, n);
   for (size_t i = 0, j = 0; i < n; i += 4, ++j) rgba_[i + 3] = alpha_backup[j];
   return true;
-#else
-  (void)params;
-  return false;
-#endif
 }
 
 bool IrisObject::apply_effect_params(const EffectParams& params) {
-#if defined(IRIS_ENGINE_OPENCV_AVAILABLE)
   if (rgba_.empty() || width_ <= 0 || height_ <= 0) return false;
   cv::Mat mat_rgba(height_, width_, CV_8UC4, rgba_.data());
   cv::Mat bgr;
@@ -197,10 +178,6 @@ bool IrisObject::apply_effect_params(const EffectParams& params) {
   std::memcpy(rgba_.data(), out_rgba.data, n);
   for (size_t i = 0, j = 0; i < n; i += 4, ++j) rgba_[i + 3] = alpha_backup[j];
   return true;
-#else
-  (void)params;
-  return false;
-#endif
 }
 
 bool IrisObject::apply_clarity(float clip_limit) {

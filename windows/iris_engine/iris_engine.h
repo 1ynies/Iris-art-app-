@@ -19,12 +19,9 @@
 #include <vector>
 #include <string>
 
-// Optional: opencv includes when OPENCV_AVAILABLE
-#if defined(IRIS_ENGINE_OPENCV_AVAILABLE)
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 #include <opencv2/photo.hpp>
-#endif
 
 namespace iris {
 
@@ -95,11 +92,6 @@ class IrisObject {
   CircleResult iris_circle_;
   CircleResult pupil_circle_;
 
-#if defined(IRIS_ENGINE_OPENCV_AVAILABLE)
-  // When OpenCV is linked, use cv::Mat for heavy lifting
-  // cv::Mat mat_rgba_;
-  // cv::Mat mat_alpha_;
-#endif
 };
 
 /**

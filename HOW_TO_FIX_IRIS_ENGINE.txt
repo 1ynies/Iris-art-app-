@@ -2,44 +2,32 @@
   Fix "Iris Engine not available" / error 126 when cutting the iris
 ================================================================================
 
-If double-clicking .cmd files does nothing, run these from an ALREADY-OPEN
-terminal (Command Prompt or PowerShell).
+The build now copies iris_engine.dll and OpenCV DLLs next to the exe automatically
+(POST_BUILD in windows/CMakeLists.txt). You need the steps below only if you still
+see "iris_engine.dll and OpenCV should be copied next to the exe" after a clean build.
+
+If double-clicking .cmd files does nothing, run from an ALREADY-OPEN terminal.
 
 --- Step 1: Open a terminal in the project folder ---
-  - In VS Code/Cursor: Terminal > New Terminal (or Ctrl+`)
-  - Or: press Win+R, type "cmd", Enter, then:
-        cd /d "C:\Users\Hiba\Desktop\Iris-designer\Iris-art-app-"
+  Terminal > New Terminal (or Ctrl+`), or: Win+R → "cmd" → Enter then:
+  cd /d "C:\Users\Hiba\Desktop\Iris-designer\Iris-art-app-"
 
---- Step 2: Copy OpenCV DLLs into the build (do this after every build) ---
+--- Step 2: Clean and rebuild so POST_BUILD runs ---
+  flutter clean
+  flutter pub get
+  flutter run -d windows
 
-  In CMD:
-    copy_vcpkg_dlls_to_build.cmd
+  If you use .vcpkg for OpenCV, ensure .vcpkg\installed\x64-windows\bin exists
+  (run build_with_opencv.cmd once if needed). The CMake POST_BUILD copies from
+  there into build\windows\x64\runner\Debug (or Release) automatically.
 
-  Or in PowerShell:
-    .\copy_vcpkg_dlls_to_build.ps1
+--- If it still fails: copy DLLs by hand (same as before) ---
+  In CMD:   copy_vcpkg_dlls_to_build.cmd
+  In PowerShell:   .\copy_vcpkg_dlls_to_build.ps1
 
-  You should see "Copied vcpkg DLLs to build\windows\x64\runner\Debug".
-
---- Step 3: Run the app ---
-  From the same terminal, so OpenCV DLLs are on PATH:
-
-  In CMD:
-    set "PATH=%CD%\.vcpkg\installed\x64-windows\bin;%PATH%"
-    flutter run -d windows
-
-  In PowerShell:
-    $env:PATH = "$PWD\.vcpkg\installed\x64-windows\bin;$env:PATH"
-    flutter run -d windows
-
-  Or use the IDE's Run / F5 after Step 2; the copied DLLs should be enough.
+  Then run: flutter run -d windows  (or F5).
 
 --- Full build from scratch (OpenCV + run) ---
-  In CMD:
-    build_with_opencv.cmd
-
-  Or in PowerShell:
-    .\build_with_opencv.ps1
-
-  (The .cmd runs the .ps1 for you. Use .cmd from CMD, or .ps1 from PowerShell.)
+  build_with_opencv.cmd   (or .\build_with_opencv.ps1)
 
 ================================================================================

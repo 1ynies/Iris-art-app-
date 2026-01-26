@@ -4,16 +4,18 @@
 
 A sophisticated Flutter application that transforms iris images into stunning artistic creations. Leveraging advanced image processing techniques, Iris Designer allows users to extract, edit, and compose iris-based artwork with professional-grade tools.
 
+**Windows only** — built around the Iris Engine native DLL and OpenCV on Windows. Linux and macOS are not supported.
+
 ## 🌟 Overview
 
-Iris Designer is a comprehensive mobile application designed for artists and enthusiasts who want to create unique art pieces from iris photographs. The app combines computer vision technology with intuitive design tools to provide a seamless workflow from image upload to final artwork generation.
+Iris Designer is a Windows desktop application designed for artists and enthusiasts who want to create unique art pieces from iris photographs. The app combines computer vision (OpenCV) with intuitive design tools to provide a seamless workflow from image upload to final artwork generation.
 
 ### Key Highlights
 - **Advanced Iris Detection**: Utilizes OpenCV-powered algorithms for precise iris extraction
 - **Multi-Step Editing Pipeline**: Professional-grade editing tools for circling, flash correction, and color adjustment
 - **Flexible Art Composition**: Support for 1-6 iris images with various layouts and effects
 - **Client Management**: Built-in session management for professional artist-client workflows
-- **Cross-Platform**: Native performance on iOS, Android, and desktop platforms
+- **Windows native**: Iris Engine DLL + OpenCV; no Linux/macOS support
 
 ## ✨ Features
 
@@ -62,7 +64,8 @@ Iris Designer is a comprehensive mobile application designed for artists and ent
 - **Dependency Injection**: GetIt service locator
 
 ### Image Processing
-- **OpenCV Dart**: Computer vision algorithms
+- **Iris Engine (C++/FFI)**: Native processing via `iris_engine.dll`
+- **OpenCV**: Computer vision algorithms (Hough circles, inpaint)
 - **Image Package**: Core image manipulation
 - **Path Provider**: File system access
 
@@ -90,10 +93,10 @@ Iris Designer is a comprehensive mobile application designed for artists and ent
 ### Prerequisites
 - Flutter SDK (3.10.4 or higher)
 - Dart SDK (included with Flutter)
-- Android Studio / Xcode for platform-specific development
-- OpenCV dependencies for image processing
+- Visual Studio 2022 with Desktop C++ workload
+- OpenCV (via vcpkg or a local OpenCV build)
 
-### Installation
+### Installation (Windows)
 
 1. **Clone the repository**
    ```bash
@@ -101,7 +104,7 @@ Iris Designer is a comprehensive mobile application designed for artists and ent
    cd iris-designer
    ```
 
-2. **Install dependencies**
+2. **Install Dart dependencies**
    ```bash
    flutter pub get
    ```
@@ -111,25 +114,23 @@ Iris Designer is a comprehensive mobile application designed for artists and ent
    flutter pub run build_runner build
    ```
 
-4. **Run the application**
+4. **Build & run (recommended)**
    ```bash
-   flutter run
+   build_with_opencv.cmd
    ```
 
-### Platform-Specific Setup
+   This script installs OpenCV via vcpkg (first run), builds the native DLL,
+   and runs the app.
 
-#### Android
-- Ensure Android SDK is properly configured
-- OpenCV dependencies are handled automatically
+5. **Run the application (manual)**
+   ```bash
+   flutter run -d windows
+   ```
 
-#### iOS
-- Open `ios/Runner.xcworkspace` in Xcode
-- Ensure CocoaPods dependencies are installed
-- Add camera and photo library permissions
-
-#### Desktop (Windows/macOS/Linux)
-- Ensure platform-specific build tools are installed
-- Run with `flutter run -d windows` (or respective platform)
+### OpenCV + DLLs (Windows)
+- The build copies `iris_engine.dll` and OpenCV runtime DLLs next to the exe
+  (POST_BUILD in `windows/runner/CMakeLists.txt`).
+- `DynamicLibrary.open('iris_engine.dll')` relies on the DLL being next to the exe.
 
 ## 📖 Usage
 
@@ -227,7 +228,7 @@ We welcome contributions to Iris Designer! Please follow these steps:
 - Follow Flutter best practices
 - Write comprehensive tests
 - Update documentation for new features
-- Ensure cross-platform compatibility
+- Target Windows only (native DLL + OpenCV)
 
 ## 📄 License
 

@@ -39,19 +39,33 @@ target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_SOURCE_DIR}")
 # Run the Flutter tool portions of the build. This must not be removed.
 add_dependencies(${BINARY_NAME} flutter_assemble)
 
-# Copy iris_engine.dll next to the exe for FFI (install may not run during "flutter run").
+# Ensure iris_engine is built before the app.
 add_dependencies(${BINARY_NAME} iris_engine)
+
+# --- POST_BUILD: copy iris_engine.dll and OpenCV runtime DLLs next to the exe ---
+# Prefer OpenCV dir from iris_engine, else fall back to project-root .vcpkg.
+set(_ocv_srcdir "")
+if(DEFINED IRIS_ENGINE_OPENCV_DLL_DIR AND EXISTS "${IRIS_ENGINE_OPENCV_DLL_DIR}")
+  set(_ocv_srcdir "${IRIS_ENGINE_OPENCV_DLL_DIR}")
+else()
+  get_filename_component(_proj_root "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
+  set(_vcpkg_bin "${_proj_root}/.vcpkg/installed/x64-windows/bin")
+  if(EXISTS "${_vcpkg_bin}")
+    set(_ocv_srcdir "${_vcpkg_bin}")
+  endif()
+endif()
+
 add_custom_command(TARGET ${BINARY_NAME} POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
     $<TARGET_FILE:iris_engine>
     $<TARGET_FILE_DIR:${BINARY_NAME}>
   COMMENT "Copy iris_engine.dll next to executable for FFI")
-# When OpenCV came from vcpkg, copy its bin/*.dll so iris_engine.dll can load at runtime.
-if(DEFINED IRIS_ENGINE_VCPKG_BIN_DIR AND EXISTS "${IRIS_ENGINE_VCPKG_BIN_DIR}")
+if(_ocv_srcdir)
+  get_filename_component(_copy_script "${CMAKE_CURRENT_SOURCE_DIR}/copy_vcpkg_dlls.cmake" ABSOLUTE)
   add_custom_command(TARGET ${BINARY_NAME} POST_BUILD
     COMMAND ${CMAKE_COMMAND}
-      -D SRCDIR="${IRIS_ENGINE_VCPKG_BIN_DIR}"
-      -D DSTDIR=$<TARGET_FILE_DIR:${BINARY_NAME}>
-      -P "${CMAKE_CURRENT_SOURCE_DIR}/copy_vcpkg_dlls.cmake"
-    COMMENT "Copy vcpkg/OpenCV DLLs for iris_engine")
+      -D "SRCDIR=${_ocv_srcdir}"
+      -D "DSTDIR=$<TARGET_FILE_DIR:${BINARY_NAME}>"
+      -P "${_copy_script}"
+    COMMENT "Copy OpenCV runtime DLLs (opencv_world411.dll etc.) for iris_engine")
 endif()

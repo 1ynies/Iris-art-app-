@@ -3,23 +3,6 @@
  * Radial stretch maps [pupil_r, iris_r] -> [0.5*pupil_r, iris_r]; circular alpha mask; crop to iris box.
  */
 
-#if !defined(IRIS_ENGINE_OPENCV_AVAILABLE)
-// Stub when OpenCV not available
-#include "iris_cut.h"
-#include <cstdlib>
-
-namespace iris {
-
-bool process_iris_cut(const char*, double, double, double, double, double, double,
-                      uint8_t**, int*, int*) { return false; }
-bool process_iris_cut_from_view(const char*, double, double, double, double,
-                                double, double, double, double,
-                                uint8_t**, int*, int*) { return false; }
-
-}  // namespace iris
-
-#else
-
 #include "iris_cut.h"
 #include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
@@ -188,5 +171,3 @@ bool process_iris_cut_from_view(
 }
 
 }  // namespace iris
-
-#endif  // IRIS_ENGINE_OPENCV_AVAILABLE

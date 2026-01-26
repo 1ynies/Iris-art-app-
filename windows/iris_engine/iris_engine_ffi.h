@@ -106,9 +106,15 @@ IRIS_FFI_API int iris_engine_apply_effects(
 );
 
 /**
- * Returns 1 if the engine was built with OpenCV support, otherwise 0.
+ * Returns 1 when OpenCV is linked (always true for required builds).
  */
 IRIS_FFI_API int iris_engine_has_opencv(void);
+
+/**
+ * Runtime sanity check for OpenCV linkage.
+ * Returns 0 on success, -1 on failure.
+ */
+IRIS_FFI_API int iris_engine_init(void);
 
 /**
  * Phase 1: Circling & cutting with user-defined circles and 50% pupil shrink.

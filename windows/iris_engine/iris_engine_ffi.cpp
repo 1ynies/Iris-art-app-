@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <opencv2/core.hpp>
 
 static uint8_t grayscale_byte(uint8_t r, uint8_t g, uint8_t b) {
   // Rec. 601 luma
@@ -17,6 +18,15 @@ static uint8_t grayscale_byte(uint8_t r, uint8_t g, uint8_t b) {
   if (y < 0) return 0;
   if (y > 255) return 255;
   return static_cast<uint8_t>(y);
+}
+
+static bool checkOpenCV() {
+  try {
+    cv::Mat test(10, 10, CV_8UC1);
+    return !test.empty();
+  } catch (...) {
+    return false;
+  }
 }
 
 extern "C" {
@@ -99,11 +109,11 @@ IRIS_FFI_API int iris_engine_apply_effects(IrisEngineHandle handle,
 }
 
 IRIS_FFI_API int iris_engine_has_opencv(void) {
-#if defined(IRIS_ENGINE_OPENCV_AVAILABLE)
   return 1;
-#else
-  return 0;
-#endif
+}
+
+IRIS_FFI_API int iris_engine_init(void) {
+  return checkOpenCV() ? 0 : -1;
 }
 
 IRIS_FFI_API int iris_engine_process_iris_cut(

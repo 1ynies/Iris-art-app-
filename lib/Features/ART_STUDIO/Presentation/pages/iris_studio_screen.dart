@@ -20,8 +20,6 @@ import 'package:iris_designer/Features/ART_STUDIO/Presentation/views/case4_view.
 import 'package:iris_designer/Features/ART_STUDIO/Presentation/views/case5_view.dart';
 import 'package:iris_designer/Features/ART_STUDIO/Presentation/views/case6_view.dart';
 import 'package:iris_designer/Features/ONBOARDING/Domain/entities/client_session.dart';
-import 'package:url_launcher/url_launcher.dart';
-import 'package:url_launcher/url_launcher_string.dart';
 
 class ArtStudioScreen extends StatefulWidget {
   final ClientSession session;
@@ -437,7 +435,7 @@ class _PhotopeaPreviewTabState extends State<PhotopeaPreviewTab> {
 
   @override
   Widget build(BuildContext context) {
-    if (!kIsWeb && Platform.isLinux) return _buildLinuxFallback();
+    if (!Platform.isWindows) return _buildNonWindowsMessage();
     return Stack(
       children: [
         InAppWebView(
@@ -456,7 +454,7 @@ class _PhotopeaPreviewTabState extends State<PhotopeaPreviewTab> {
     );
   }
 
-  Widget _buildLinuxFallback() {
+  Widget _buildNonWindowsMessage() {
     return Center(
       child: Container(
         width: 400, padding: const EdgeInsets.all(32),
@@ -464,24 +462,12 @@ class _PhotopeaPreviewTabState extends State<PhotopeaPreviewTab> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.web_asset_off, size: 50, color: Colors.orangeAccent),
+            const Icon(Icons.desktop_windows, size: 50, color: Colors.orangeAccent),
             const Gap(20),
-            Text("External Editor Required", style: GoogleFonts.poppins(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w600)),
+            Text("Windows only", style: GoogleFonts.poppins(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w600)),
             const Gap(12),
-            Text("Embedded design tools are currently limited on Linux. Please open the studio in your browser.", textAlign: TextAlign.center, style: GoogleFonts.poppins(color: Colors.white70, fontSize: 13)),
-            const Gap(30),
-            SizedBox(
-              width: double.infinity, height: 50,
-              child: ElevatedButton.icon(
-                icon: const Icon(Icons.open_in_browser), label: const Text("Open in Browser"),
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.blueAccent, foregroundColor: Colors.white),
-                onPressed: () async {
-                  final Uri url = Uri.parse(_buildPhotopeaUrl());
-                  if (await canLaunchUrl(url)) await launchUrl(url, mode: LaunchMode.externalApplication);
-                },
-              ),
-            ),
-            const Gap(16),
+            Text("Iris Designer runs on Windows only. The Iris Engine and embedded tools are not available on Linux or macOS.", textAlign: TextAlign.center, style: GoogleFonts.poppins(color: Colors.white70, fontSize: 13)),
+            const Gap(24),
             TextButton(onPressed: widget.onReset, child: const Text("Back to Settings", style: TextStyle(color: Colors.grey))),
           ],
         ),

@@ -5,7 +5,7 @@ Flutter handles the UI; this engine handles image processing via **Dart FFI** an
 ## What you need for circling to work
 
 1. **Run on Windows** with `iris_engine.dll` next to the app executable.
-2. **Build the DLL with OpenCV** — in `windows/iris_engine/CMakeLists.txt`, `find_package(OpenCV)` is used and `IRIS_ENGINE_OPENCV_AVAILABLE` is set when OpenCV is found.
+2. **Build the DLL with OpenCV** — in `windows/iris_engine/CMakeLists.txt`, `find_package(OpenCV REQUIRED)` enforces OpenCV at configure time.
 
 ### Building with OpenCV
 
@@ -29,7 +29,9 @@ This will clone vcpkg into `.vcpkg` if needed, install OpenCV, set `OpenCV_DIR`,
    ```
 3. **CMake cache:** when configuring, pass `-DOpenCV_DIR=C:/opencv/build`.
 
-The root `windows/CMakeLists.txt` installs `iris_engine.dll` next to the Flutter app executable so `DynamicLibrary.open('iris_engine.dll')` works.
+The build copies `iris_engine.dll` and OpenCV DLLs next to the Flutter app executable
+via POST_BUILD in `windows/iris_engine/CMakeLists.txt`, so `DynamicLibrary.open('iris_engine.dll')`
+resolves by filename only.
 
 ## Layout
 

@@ -1,7 +1,8 @@
 // ignore_for_file: unused_element
 
 /// Phase 1: Circling & Cutting — Dart FFI bridge to native process_iris_cut (2026).
-/// Loads iris_engine.dll, calls iris_engine_process_iris_cut_from_view, returns RGBA + dimensions.
+/// On Windows, loads iris_engine.dll by name only (via [loadIrisEngine]) so the
+/// loader uses the executable directory; no full path is passed.
 library;
 
 import 'dart:ffi';
@@ -52,6 +53,8 @@ typedef _FreeNative = Void Function(Pointer<Void> ptr);
 typedef _FreeDart = void Function(Pointer<Void> ptr);
 typedef _HasOpenCvNative = Int32 Function();
 typedef _HasOpenCvDart = int Function();
+typedef _InitNative = Int32 Function();
+typedef _InitDart = int Function();
 
 DynamicLibrary? _loadEngine() {
   if (!Platform.isWindows) return null;
@@ -75,6 +78,25 @@ class NativeIrisBridge {
     if (_inited) return;
     _inited = true;
     _lib = _loadEngine();
+    if (Platform.isWindows && _lib == null) {
+      throw Exception(
+        'CRITICAL: iris_engine.dll failed to load. Ensure iris_engine.dll and OpenCV DLLs are next to the exe.',
+      );
+    }
+    final init = _init;
+    if (Platform.isWindows && init == null) {
+      throw Exception(
+        'CRITICAL: iris_engine_init symbol missing. Engine DLL is incompatible.',
+      );
+    }
+    if (init != null) {
+      final ok = init();
+      if (ok == -1) {
+        throw Exception(
+          'CRITICAL: OpenCV Engine failed to initialize. DLLs missing or incompatible.',
+        );
+      }
+    }
   }
 
   bool get isAvailable {
@@ -117,6 +139,17 @@ class NativeIrisBridge {
       return _lib!
           .lookup<NativeFunction<_HasOpenCvNative>>('iris_engine_has_opencv')
           .asFunction<_HasOpenCvDart>();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  _InitDart? get _init {
+    if (_lib == null) return null;
+    try {
+      return _lib!
+          .lookup<NativeFunction<_InitNative>>('iris_engine_init')
+          .asFunction<_InitDart>();
     } catch (_) {
       return null;
     }
