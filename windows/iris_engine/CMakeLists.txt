@@ -1,5 +1,5 @@
 # Iris Engine — Native C++ DLL for image processing (2026)
-# Circling requires OpenCV (Hough circles). Set OpenCV_DIR if not in default path.
+# OpenCV is mandatory. Configure OpenCV_DIR if not in default path.
 # Example: cmake -DOpenCV_DIR=C:/opencv/build ...
 
 cmake_minimum_required(VERSION 3.14)
@@ -21,7 +21,7 @@ target_compile_features(iris_engine PUBLIC cxx_std_20)
 target_compile_definitions(iris_engine PRIVATE IRIS_ENGINE_DLL_EXPORT)
 
 # OpenCV for circling (Hough) and Phase 1 cut-and-warp.
-# Use only when OpenCV_DIR is set to a *built* OpenCV (e.g. C:/opencv/build).
+# OpenCV_DIR must point to a *built* OpenCV (e.g. C:/opencv/build).
 # Do NOT use the opencv_dart plugin's _deps/libopencv-src — it has no compatible binaries.
 set(OpenCV_DIR "" CACHE PATH "OpenCV build dir (e.g. C:/opencv/build)")
 if(DEFINED ENV{OpenCV_DIR} AND NOT OpenCV_DIR)
@@ -89,12 +89,15 @@ if(NOT DEFINED IRIS_ENGINE_OPENCV_DLL_DIR)
   endforeach()
 endif()
 
-if(NOT DEFINED IRIS_ENGINE_OPENCV_DLL_DIR)
-  message(FATAL_ERROR "Iris Engine: Could not locate OpenCV DLLs for POST_BUILD copy. Set OpenCV_DIR to your built OpenCV root (e.g. C:/opencv/build) or vcpkg share/opencv4.")
+set(IRIS_ENGINE_OPENCV_COPY_DIR "${OpenCV_DIR}/x64/vc16/bin")
+if(NOT EXISTS "${IRIS_ENGINE_OPENCV_COPY_DIR}")
+  if(DEFINED IRIS_ENGINE_OPENCV_DLL_DIR)
+    set(IRIS_ENGINE_OPENCV_COPY_DIR "${IRIS_ENGINE_OPENCV_DLL_DIR}")
+  endif()
 endif()
 
-if(NOT EXISTS "${IRIS_ENGINE_OPENCV_DLL_DIR}")
-  message(FATAL_ERROR "Iris Engine: OpenCV DLL dir not found: ${IRIS_ENGINE_OPENCV_DLL_DIR}")
+if(NOT EXISTS "${IRIS_ENGINE_OPENCV_COPY_DIR}")
+  message(FATAL_ERROR "Iris Engine: Could not locate OpenCV DLLs for POST_BUILD copy. Set OpenCV_DIR to your built OpenCV root (e.g. C:/opencv/build) or vcpkg share/opencv4.")
 endif()
 
 message(STATUS "Iris Engine: OpenCV required and linked.")
@@ -104,7 +107,7 @@ target_compile_definitions(iris_engine PRIVATE NOMINMAX)
 
 add_custom_command(TARGET iris_engine POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_directory
-  "${IRIS_ENGINE_OPENCV_DLL_DIR}"
+  "${IRIS_ENGINE_OPENCV_COPY_DIR}"
   $<TARGET_FILE_DIR:iris_engine>
 )
 
